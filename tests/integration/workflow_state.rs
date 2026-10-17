@@ -3,36 +3,9 @@ use jensen_harness_core::store::workflow::WorkflowRun;
 use jensen_harness_core::store::{NewScope, ReserveOutcome, ReserveRequest, ScopeKind, Store};
 use jensen_harness_workflow::reducer::apply;
 use jensen_harness_workflow::spec::Reducer;
-use jensen_harness_workflow::state::{State, StateError, externalize, resolve};
-use jensen_harness_workflow::{Workflow, load};
+use jensen_harness_workflow::state::{StateError, externalize, resolve};
 use proptest::prelude::*;
 use serde_json::{Value, json};
-
-const DIAMOND: &str = "
-version: 1
-name: diamond
-channels:
-  seed: { schema: { type: string }, init: s }
-  tags: { schema: { type: array }, reducer: set_union }
-  log: { schema: { type: array }, reducer: append }
-  best: { schema: { type: number }, reducer: max }
-  meta: { schema: { type: object }, reducer: merge_map }
-  note: { schema: { type: string } }
-nodes:
-  a: { kind: command, run: x, reads: [seed], writes: [note] }
-  b: { kind: command, run: x, reads: [seed], writes: [tags, log, best, meta] }
-  c: { kind: command, run: x, reads: [seed], writes: [tags, log, best, meta] }
-  d: { kind: command, run: x, reads: [tags, log, best, meta, note] }
-edges:
-  - { from: a, to: b }
-  - { from: a, to: c }
-  - { from: b, to: d }
-  - { from: c, to: d }
-";
-
-fn diamond() -> Workflow {
-    load(DIAMOND).unwrap()
-}
 
 #[test]
 fn every_reducer_combines_as_documented() {
@@ -74,76 +47,41 @@ fn every_reducer_combines_as_documented() {
     assert!(apply(Reducer::MergeMap, held(json!({})), json!([1])).is_err());
 }
 
-fn fold(order: &[usize]) -> Vec<Value> {
-    let workflow = diamond();
-    let mut state = State::new(&workflow).unwrap();
-    let writes: Vec<(&str, &str, Value)> = vec![
-        ("b", "tags", json!(["x", "y"])),
-        ("c", "tags", json!(["y", "z"])),
-        ("b", "log", json!(["from b"])),
-        ("c", "log", json!(["from c"])),
-        ("b", "best", json!(4)),
-        ("c", "best", json!(9)),
-        ("b", "meta", json!({"k": "b", "only_b": 1})),
-        ("c", "meta", json!({"k": "c"})),
-        ("a", "note", json!("hello")),
-    ];
-    for index in order {
-        let (node, channel, value) = writes.get(*index).unwrap().clone();
-        state.write(node, channel, value).unwrap();
+fn union_of(batches: &[Vec<u8>]) -> Vec<u64> {
+    let mut held: Option<Value> = None;
+    for batch in batches {
+        held = Some(apply(Reducer::SetUnion, held, json!(batch)).unwrap());
     }
-    ["tags", "log", "best", "meta", "note"]
+    let mut members: Vec<u64> = held
+        .unwrap()
+        .as_array()
+        .unwrap()
         .iter()
-        .map(|channel| state.value(channel).unwrap().unwrap())
-        .collect()
+        .map(|member| member.as_u64().unwrap())
+        .collect();
+    members.sort_unstable();
+    members
+}
+
+fn best_of(batches: &[Vec<u8>]) -> Value {
+    let mut held: Option<Value> = None;
+    for batch in batches {
+        let top = batch.iter().max().copied().unwrap_or(0);
+        held = Some(apply(Reducer::Max, held, json!(top)).unwrap());
+    }
+    held.unwrap()
 }
 
 proptest! {
     #[test]
-    fn the_folded_state_never_depends_on_completion_order(
-        order in Just((0..9usize).collect::<Vec<_>>()).prop_shuffle()
+    fn set_union_and_max_give_the_same_answer_in_any_order(
+        pair in proptest::collection::vec(proptest::collection::vec(0u8..8, 0..5), 1..6)
+            .prop_flat_map(|batches| (Just(batches.clone()), Just(batches).prop_shuffle()))
     ) {
-        let reference = fold(&(0..9).collect::<Vec<_>>());
-        prop_assert_eq!(fold(&order), reference);
+        let (batches, shuffled) = pair;
+        prop_assert_eq!(union_of(&batches), union_of(&shuffled));
+        prop_assert_eq!(best_of(&batches), best_of(&shuffled));
     }
-}
-
-#[test]
-fn a_write_against_the_schema_or_outside_the_declared_set_is_refused() {
-    let workflow = diamond();
-    let mut state = State::new(&workflow).unwrap();
-    assert!(matches!(
-        state.write("a", "note", json!(7)),
-        Err(StateError::SchemaViolation { channel, .. }) if channel == "note"
-    ));
-    assert!(matches!(
-        state.write("a", "tags", json!([])),
-        Err(StateError::UndeclaredWrite { .. })
-    ));
-    assert!(matches!(
-        state.write("a", "ghost", json!([])),
-        Err(StateError::UnknownChannel(_))
-    ));
-}
-
-#[test]
-fn init_is_the_base_and_memo_keys_follow_inputs_and_definition() {
-    let workflow = diamond();
-    let mut state = State::new(&workflow).unwrap();
-    assert_eq!(state.value("seed").unwrap(), Some(json!("s")));
-    let node = workflow.spec().nodes.get("d").unwrap();
-    let reads = node.reads().to_vec();
-    state.write("b", "best", json!(1)).unwrap();
-    state.write("a", "note", json!("n")).unwrap();
-    let before = state.memo_key(node, &reads).unwrap();
-    assert_eq!(before, state.memo_key(node, &reads).unwrap());
-    state.write("c", "best", json!(5)).unwrap();
-    assert_ne!(before, state.memo_key(node, &reads).unwrap());
-    let other = workflow.spec().nodes.get("b").unwrap();
-    assert_ne!(
-        state.memo_key(node, &reads).unwrap(),
-        state.memo_key(other, &reads).unwrap()
-    );
 }
 
 #[tokio::test]

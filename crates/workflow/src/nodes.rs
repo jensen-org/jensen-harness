@@ -313,6 +313,13 @@ async fn run_agent(
                     .await
                     .map_err(agent_error)?;
                 (session, Some(outcome.stop))
+            } else if session.turns().is_empty() {
+                let prompt = compose_prompt(shared, node, inputs);
+                let outcome = session
+                    .prompt(provider.as_ref(), &prompt)
+                    .await
+                    .map_err(agent_error)?;
+                (session, Some(outcome.stop))
             } else {
                 (session, None)
             }

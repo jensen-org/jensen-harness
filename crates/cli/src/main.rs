@@ -165,10 +165,9 @@ fn build_engine(
     if let Some(address) = models.default_model.as_deref() {
         models.resolve(Some(address))?;
     }
-    let directory = path.parent().map_or_else(
-        || PathBuf::from("workflow-runs"),
-        |dir| dir.join("workflow-runs"),
-    );
+    let mut directory = path.clone().into_os_string();
+    directory.push(".workflow-runs");
+    let directory = PathBuf::from(directory);
     owner_only_dir(&directory).with_context(|| {
         format!(
             "the workflow checkpoint directory {} could not be prepared",

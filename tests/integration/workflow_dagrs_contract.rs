@@ -1,7 +1,3 @@
-//! What the workflow engine relies on from dagrs, pinned against the real
-//! crate. If a dagrs upgrade changes one of these behaviors, this file fails
-//! before any workflow does.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,7 +15,6 @@ use tokio_util::sync::CancellationToken;
 type Behavior =
     dyn Fn(&StateSnapshot, &Keys) -> DagrsResult<(StateDelta, StepTransition)> + Send + Sync;
 
-/// The channel keys of one test schema, by name.
 #[derive(Clone)]
 struct Keys(Arc<BTreeMap<String, StateKey<Value>>>);
 

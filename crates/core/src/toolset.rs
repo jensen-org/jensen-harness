@@ -171,19 +171,12 @@ impl ToolSet {
         }
     }
 
-    /// Refuses `edit` and `shell` with an error the model can read, so the
-    /// tool list the provider sees (and caches) does not change.
     #[must_use]
     pub fn read_only(mut self) -> Self {
         self.read_only = true;
         self
     }
 
-    /// Runs `command` in the sandbox and returns its raw result, for the
-    /// harness itself rather than the model.
-    ///
-    /// # Errors
-    /// [`ToolSetError::Sandbox`] when the command could not be started.
     pub async fn run_command(
         &self,
         command: &str,

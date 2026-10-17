@@ -672,3 +672,115 @@ async fn cancelling_stops_the_nodes_and_leaves_no_held_reservation() {
     assert_eq!(last.kind, EventKind::WorkflowFinished);
     assert_eq!(last.payload.get("released_reservations"), Some(&json!(1)));
 }
+
+fn diamond(first_delay: &str, second_delay: &str) -> String {
+    format!(
+        r#"
+version: 1
+name: diamond
+channels:
+  tags: {{ schema: {{ type: array }}, reducer: set_union }}
+  log: {{ schema: {{ type: array }}, reducer: append }}
+  best: {{ schema: {{ type: number }}, reducer: max }}
+  meta: {{ schema: {{ type: object }}, reducer: merge_map }}
+  seen: {{ schema: {{ type: object }} }}
+nodes:
+  root: {{ kind: command, run: 'true' }}
+  left:
+    kind: command
+    run: 'sleep {first_delay}; echo "{{\"tags\":[\"x\",\"y\"],\"log\":[\"left\"],\"best\":4,\"meta\":{{\"k\":\"left\",\"l\":1}}}}"'
+    writes: [tags, log, best, meta]
+  right:
+    kind: command
+    run: 'sleep {second_delay}; echo "{{\"tags\":[\"y\",\"z\"],\"log\":[\"right\"],\"best\":9,\"meta\":{{\"k\":\"right\"}}}}"'
+    writes: [tags, log, best, meta]
+  join: {{ kind: command, run: 'true', reads: [tags, log, best, meta], output: seen }}
+edges:
+  - {{ from: root, to: left }}
+  - {{ from: root, to: right }}
+  - {{ from: left, to: join }}
+  - {{ from: right, to: join }}
+"#
+    )
+}
+
+#[tokio::test]
+async fn the_merged_state_never_depends_on_which_branch_finishes_first() {
+    let mut results = Vec::new();
+    for (index, (first, second)) in [("0", "0.4"), ("0.4", "0"), ("0.1", "0.1")]
+        .into_iter()
+        .enumerate()
+    {
+        let fixture = fixture(scripted(vec![]));
+        let report = run(
+            &fixture,
+            &diamond(first, second),
+            &format!("dm{index}"),
+            Caps::default(),
+        )
+        .await;
+        assert!(report.failure.is_none(), "{:?}", report.failure);
+        results.push((
+            report.channels.get("tags").cloned(),
+            report.channels.get("log").cloned(),
+            report.channels.get("best").cloned(),
+            report.channels.get("meta").cloned(),
+        ));
+    }
+    assert!(
+        results.windows(2).all(|pair| pair[0] == pair[1]),
+        "{results:?}"
+    );
+    let (tags, log, best, meta) = results.remove(0);
+    assert_eq!(tags, Some(json!(["x", "y", "z"])));
+    assert_eq!(log, Some(json!(["left", "right"])));
+    assert_eq!(best, Some(json!(9)));
+    assert_eq!(meta, Some(json!({"k": "right", "l": 1})));
+}
+
+#[tokio::test]
+async fn an_agent_session_created_but_never_prompted_is_prompted_on_resume() {
+    use jensen_harness_core::agent::{Session, SessionConfig};
+    use jensen_harness_core::budget::BudgetSettings;
+    use jensen_harness_core::store::{NewScope, ScopeKind};
+
+    let fixture = fixture(scripted(vec![says(r#"{"findings": ["a"]}"#)]));
+    for (id, parent, kind) in [
+        ("g1", None, ScopeKind::Run),
+        ("g1:scout:0", Some("g1".to_owned()), ScopeKind::Node),
+    ] {
+        fixture
+            .store
+            .open_scope(NewScope {
+                id: id.to_owned(),
+                parent_id: parent,
+                kind,
+                caps: Caps::default(),
+                soft_percent: 80,
+            })
+            .await
+            .unwrap();
+    }
+    Session::create(
+        fixture.store.clone(),
+        SessionConfig {
+            session_id: "g1.scout.0".to_owned(),
+            run_id: Some("g1:scout:0".to_owned()),
+            model_address: "scripted/m".to_owned(),
+            max_turns: 3,
+            budget: BudgetSettings::default()
+                .resolve(None, "scripted/m")
+                .unwrap(),
+            price_version: String::new(),
+        },
+        tool_set(&fixture.root),
+    )
+    .await
+    .unwrap();
+
+    let report = run(&fixture, READER, "g1", Caps::default()).await;
+
+    assert!(report.failure.is_none(), "{:?}", report.failure);
+    assert_eq!(report.status, RunStatus::Succeeded);
+    assert_eq!(report.channels.get("findings"), Some(&json!(["a"])));
+}

@@ -1,7 +1,3 @@
-//! The `workflow.*` JSON-RPC methods: they run a workflow file over a
-//! worktree, report where a run stands, continue one from its checkpoint
-//! and cancel one in flight.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

@@ -1,5 +1,3 @@
-//! Declarative workflows: a YAML spec, validated on a graph, run on dagrs.
-
 pub mod error;
 pub mod expr;
 pub mod host;

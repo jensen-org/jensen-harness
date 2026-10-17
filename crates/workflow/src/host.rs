@@ -13,12 +13,8 @@ pub struct RoleBinding {
 }
 
 pub trait Host: Send + Sync {
-    /// # Errors
-    /// [`RunError::UnknownRole`] when no model is bound to `role`.
     fn bind(&self, role: &str) -> Result<RoleBinding, RunError>;
 
-    /// # Errors
-    /// [`RunError`] when the worktree tools cannot be built.
     fn tools(&self) -> Result<ToolSet, RunError>;
 
     fn worktree(&self) -> &Path;

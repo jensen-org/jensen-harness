@@ -285,9 +285,6 @@ pub struct SessionUpdateParams {
     pub delta: String,
 }
 
-/// `workflow.start`: run the workflow file at `workflow` (relative paths are
-/// taken from the worktree) over `worktree`, with `inputs` seeding its
-/// channels. The call returns when the run ends.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowStartParams {
@@ -310,9 +307,6 @@ pub enum WorkflowStatus {
     DeadlineExceeded,
 }
 
-/// What `workflow.start` and `workflow.resume` return. `outcomes` names how
-/// each node that ran ended (`ok`, `failed`, `interrupted`, `stalled` or
-/// `exhausted`); a node that was skipped has none.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowRunResult {
     pub run_id: String,
@@ -337,16 +331,12 @@ pub struct WorkflowStatusResult {
     pub status: WorkflowStatus,
 }
 
-/// `workflow.resume`: continue a run from its last committed wave, from the
-/// spec it was started with. Its result is `workflow.start`'s.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowResumeParams {
     pub run_id: String,
 }
 
-/// `workflow.cancel`: stop a run that is in flight in this daemon. Send it
-/// on another connection than the one waiting for the run.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowCancelParams {

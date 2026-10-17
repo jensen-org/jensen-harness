@@ -473,10 +473,6 @@ impl Store {
             .await
     }
 
-    /// Open reservations of `scope_id` and every scope beneath it.
-    ///
-    /// # Errors
-    /// [`StoreError`] when the read fails.
     pub async fn open_reservations_under(&self, scope_id: &str) -> Result<Vec<String>, StoreError> {
         let scope_id = scope_id.to_string();
         self.with(move |conn| {

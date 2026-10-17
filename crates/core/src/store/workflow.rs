@@ -1,6 +1,3 @@
-//! Workflow runs, content addressed artifacts and memoized node results.
-//! Like the journal, none of it is ever updated or deleted.
-
 use rusqlite::{OptionalExtension, params};
 
 use super::{Store, StoreError, now_ms};
@@ -15,11 +12,6 @@ pub struct WorkflowRun {
 }
 
 impl Store {
-    /// Stores `bytes` under their blake3 hash and returns the hash. Storing
-    /// the same bytes twice is a no-op.
-    ///
-    /// # Errors
-    /// [`StoreError`] when the write fails.
     pub async fn put_artifact(&self, bytes: Vec<u8>) -> Result<String, StoreError> {
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let key = hash.clone();
@@ -34,9 +26,6 @@ impl Store {
         Ok(hash)
     }
 
-    /// # Errors
-    /// [`StoreError`] when the read fails or the stored bytes no longer
-    /// match their hash.
     pub async fn artifact(&self, hash: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let key = hash.to_owned();
         let found: Option<Vec<u8>> = self
@@ -60,8 +49,6 @@ impl Store {
         Ok(found)
     }
 
-    /// # Errors
-    /// [`StoreError`] when the run already exists or the write fails.
     pub async fn create_workflow_run(&self, run: WorkflowRun) -> Result<(), StoreError> {
         self.with(move |conn| {
             conn.execute(
@@ -74,8 +61,6 @@ impl Store {
         .await
     }
 
-    /// # Errors
-    /// [`StoreError`] when the read fails.
     pub async fn workflow_run(&self, run_id: &str) -> Result<Option<WorkflowRun>, StoreError> {
         let key = run_id.to_owned();
         self.with(move |conn| {
@@ -98,8 +83,6 @@ impl Store {
         .await
     }
 
-    /// # Errors
-    /// [`StoreError`] when the run is unknown or the write fails.
     pub async fn record_node_result(
         &self,
         run_id: &str,
@@ -124,10 +107,6 @@ impl Store {
         .await
     }
 
-    /// The outputs most recently recorded for `memo_key`, if any.
-    ///
-    /// # Errors
-    /// [`StoreError`] when the read fails.
     pub async fn memoized_result(&self, memo_key: &str) -> Result<Option<String>, StoreError> {
         let key = memo_key.to_owned();
         self.with(move |conn| {

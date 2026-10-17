@@ -1,10 +1,3 @@
-//! The design's phase 3 check against the real binary: kill -9 the daemon
-//! while a workflow's agent node is waiting on the model, start it again on
-//! the same state file and resume the run. Finished nodes must not run
-//! again, the agent must pick its own session up, the provider must see each
-//! completed call once, and the final channels must equal those of a run
-//! nothing interrupted.
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -132,7 +125,8 @@ async fn a_workflow_killed_mid_agent_call_resumes_to_the_same_channels_as_an_uni
     drop(daemon);
     {
         use std::os::unix::fs::PermissionsExt;
-        let checkpoints = reference.state.parent().unwrap().join("workflow-runs");
+        let mut checkpoints = reference.state.clone().into_os_string();
+        checkpoints.push(".workflow-runs");
         let mode = std::fs::metadata(checkpoints).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700, "checkpoints hold channel state");
     }
@@ -170,8 +164,12 @@ async fn a_workflow_killed_mid_agent_call_resumes_to_the_same_channels_as_an_uni
     let resumed = second
         .call(2, "workflow.resume", json!({"run_id": run_id}))
         .await;
+    let after = second
+        .call(3, "workflow.status", json!({"run_id": run_id}))
+        .await;
     drop(second);
 
+    assert_eq!(after["result"]["status"], "succeeded", "{after}");
     assert!(resumed.get("error").is_none(), "{resumed}");
     assert_eq!(resumed["result"]["status"], "succeeded", "{resumed}");
     assert_eq!(

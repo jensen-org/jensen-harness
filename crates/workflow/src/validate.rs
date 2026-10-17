@@ -108,7 +108,7 @@ impl Workflow {
         check_state_flow(&spec, &owners, &graph, &index)?;
         check_parallelism(&spec, &owners, &graph, &index)?;
         let waves = waves(&graph, &order);
-        let hash = hash(&spec);
+        let hash = hash(&spec)?;
         Ok(Self {
             spec,
             hash,
@@ -141,11 +141,11 @@ impl Workflow {
     }
 }
 
-fn hash(spec: &WorkflowSpec) -> String {
+fn hash(spec: &WorkflowSpec) -> Result<String, SpecError> {
     let canonical = serde_json::to_value(spec)
-        .map(|value| value.to_string())
-        .unwrap_or_default();
-    blake3::hash(canonical.as_bytes()).to_hex().to_string()
+        .map_err(|error| SpecError::Yaml(error.to_string()))?
+        .to_string();
+    Ok(blake3::hash(canonical.as_bytes()).to_hex().to_string())
 }
 
 fn check_channels(spec: &WorkflowSpec) -> Result<(), SpecError> {

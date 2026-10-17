@@ -54,7 +54,8 @@ Newline delimited JSON-RPC 2.0, identical on stdio and the Unix socket (owner on
   `status` is `running`, `succeeded`, `failed`, `cancelled`, `budget_exceeded` or `deadline_exceeded`.
 - `workflow.status {run_id}`, `workflow.resume {run_id}` and `workflow.cancel {run_id}`. Resume rebuilds
   the graph from the spec journaled with the run and continues from its last committed wave. Cancel is
-  sent on another connection than the one waiting for the run.
+  sent on another connection than the one waiting for the run, so it works on `serve` and not on `run`,
+  which serves one request at a time.
 
 Unknown parameters are rejected, so a typo never silently drops a cap. Each session has its own lock, so
 a long run never blocks another session.
@@ -82,7 +83,8 @@ its graph.
 Each agent node runs its own session, opened under a node budget scope that rolls up into the run. After
 `kill -9`, `workflow.resume` restores finished waves from the checkpoint, resumes an agent node from its
 own journal, and reports a command that had started but not finished as `interrupted` unless it is
-marked `idempotent`. A node result is also recorded by a hash of the node and its inputs, so a node that
+marked `idempotent`. Run checkpoints are kept in `<state>.workflow-runs`, a directory only its owner can
+open, next to the state file; like the state file it belongs to one daemon. A node result is also recorded by a hash of the node and its inputs, so a node that
 finished inside a wave that did not commit is not run again. Cancelling a run releases its reservations.
 
 ## Budget

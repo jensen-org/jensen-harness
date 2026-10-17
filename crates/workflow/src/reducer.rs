@@ -23,6 +23,9 @@ fn kind(value: &Value) -> &'static str {
 }
 
 pub fn apply(reducer: Reducer, current: Option<Value>, write: Value) -> Result<Value, ReduceError> {
+    if reducer == Reducer::SetUnion {
+        return set_union(current, write);
+    }
     let Some(current) = current else {
         return Ok(write);
     };
@@ -35,14 +38,6 @@ pub fn apply(reducer: Reducer, current: Option<Value>, write: Value) -> Result<V
         (Reducer::Overwrite, _, write) => Ok(write),
         (Reducer::Append, Value::Array(mut items), Value::Array(more)) => {
             items.extend(more);
-            Ok(Value::Array(items))
-        }
-        (Reducer::SetUnion, Value::Array(mut items), Value::Array(more)) => {
-            for item in more {
-                if !items.contains(&item) {
-                    items.push(item);
-                }
-            }
             Ok(Value::Array(items))
         }
         (Reducer::MergeMap, Value::Object(mut map), Value::Object(more)) => {
@@ -58,5 +53,25 @@ pub fn apply(reducer: Reducer, current: Option<Value>, write: Value) -> Result<V
             Ok(larger)
         }
         (_, current, write) => Err(mismatch(&current, &write)),
+    }
+}
+
+fn set_union(current: Option<Value>, write: Value) -> Result<Value, ReduceError> {
+    let held = current.unwrap_or_else(|| Value::Array(Vec::new()));
+    match (held, write) {
+        (Value::Array(items), Value::Array(more)) => {
+            let mut union: Vec<Value> = Vec::new();
+            for item in items.into_iter().chain(more) {
+                if !union.contains(&item) {
+                    union.push(item);
+                }
+            }
+            Ok(Value::Array(union))
+        }
+        (held, write) => Err(ReduceError {
+            reducer: Reducer::SetUnion,
+            holding: kind(&held),
+            found: kind(&write),
+        }),
     }
 }

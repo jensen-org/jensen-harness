@@ -636,13 +636,6 @@ impl Runner {
         .await
     }
 
-    /// Continues a run from its last committed wave. A run that already ended
-    /// is reported as it ended, never run again.
-    ///
-    /// # Errors
-    /// [`RunError::UnknownRun`] when the store has no such run and
-    /// [`RunError::SpecChanged`] when `workflow` is not the spec it started
-    /// from.
     pub async fn resume(
         &self,
         workflow: Workflow,
@@ -721,10 +714,6 @@ impl Runner {
         .await
     }
 
-    /// Resumes a run from the spec it was started with.
-    ///
-    /// # Errors
-    /// [`RunError::UnknownRun`] when the store has no such run.
     pub async fn resume_recorded(
         &self,
         run_id: &str,
@@ -740,10 +729,6 @@ impl Runner {
         self.resume(Workflow::new(spec)?, run_id, cancel).await
     }
 
-    /// Where a run stands, from its last checkpoint.
-    ///
-    /// # Errors
-    /// [`RunError::UnknownRun`] when the store has no such run.
     pub async fn status(&self, run_id: &str) -> Result<(String, RunStatus), RunError> {
         let record = self
             .store
