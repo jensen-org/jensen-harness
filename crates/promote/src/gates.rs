@@ -1,4 +1,4 @@
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
 use crate::diff::{Change, ChangeStatus, FileKind};
 use crate::error::{PromoteError, git};
@@ -17,6 +17,35 @@ const DEFAULT_PROTECTED: [&str; 7] = [
 ];
 
 const BINARY_SNIFF_BYTES: usize = 8192;
+
+const RESERVED_COMPONENTS: [&str; 3] = [".git", ".gitmodules", ".jensen"];
+const RESERVED_SHORT_PREFIXES: [&str; 2] = ["git~", "gitmod~"];
+
+fn normalized(component: &str) -> String {
+    component
+        .chars()
+        .filter(|c| {
+            !matches!(
+                *c,
+                '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{feff}'
+            )
+        })
+        .collect::<String>()
+        .trim_end_matches(['.', ' '])
+        .to_lowercase()
+}
+
+fn reserved_component(path: &str) -> bool {
+    path.split('/').any(|component| {
+        let name = normalized(component);
+        let dotted = format!(".{}", name.trim_start_matches('.'));
+        RESERVED_COMPONENTS.contains(&name.as_str())
+            || RESERVED_COMPONENTS.contains(&dotted.as_str()) && name.starts_with('.')
+            || RESERVED_SHORT_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct GateConfig {
@@ -81,7 +110,13 @@ impl Gates {
             .map(|pattern| (*pattern).to_owned())
             .chain(config.protected.iter().cloned())
         {
-            builder.add(Glob::new(&pattern).map_err(git)?);
+            builder.add(
+                GlobBuilder::new(&pattern)
+                    .case_insensitive(true)
+                    .literal_separator(true)
+                    .build()
+                    .map_err(git)?,
+            );
         }
         Ok(Self {
             protected: builder.build().map_err(git)?,
@@ -134,7 +169,7 @@ impl Gates {
         change: &Change,
         report: &mut Report,
     ) -> Result<(), PromoteError> {
-        if self.protected.is_match(&change.path) {
+        if self.protected.is_match(&change.path) || reserved_component(&change.path) {
             report
                 .blocks
                 .push(finding("path", &change.path, "the path is protected"));
@@ -169,13 +204,10 @@ impl Gates {
             .added_bytes
             .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
         let sniff = bytes.get(..BINARY_SNIFF_BYTES).unwrap_or(&bytes);
-        if sniff.contains(&0) {
-            if !self.config.allow_binary {
-                report
-                    .blocks
-                    .push(finding("size", &change.path, "a binary file was added"));
-            }
-            return Ok(());
+        if sniff.contains(&0) && !self.config.allow_binary {
+            report
+                .blocks
+                .push(finding("size", &change.path, "a binary file was added"));
         }
         for rule in self.secrets.scan(&bytes)? {
             report.blocks.push(finding(

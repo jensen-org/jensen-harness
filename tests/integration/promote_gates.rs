@@ -224,3 +224,66 @@ fn constructs_that_were_already_there_are_not_flagged() {
     });
     assert!(report.flags.is_empty(), "{:?}", report.flags);
 }
+
+#[test]
+fn case_and_normalization_tricks_do_not_slip_past_the_path_guard() {
+    let fixture = fixture();
+    let report = evaluate(&fixture, GateConfig::default(), "g9", |dir| {
+        std::fs::create_dir_all(dir.join(".Github/Workflows")).unwrap();
+        std::fs::write(dir.join(".Github/Workflows/ci.yml"), "on: push\n").unwrap();
+        std::fs::write(dir.join("GITMOD~1"), "x\n").unwrap();
+        std::fs::write(dir.join(".gitmodules."), "x\n").unwrap();
+        std::fs::write(dir.join(".git\u{200b}modules"), "x\n").unwrap();
+    });
+    let blocked = reasons(&report);
+    for needle in [
+        ".Github/Workflows/ci.yml",
+        "GITMOD~1",
+        ".gitmodules.",
+        ".git\u{200b}modules",
+    ] {
+        assert!(
+            blocked
+                .iter()
+                .any(|line| line.starts_with("path:") && line.contains(needle)),
+            "{needle:?} not blocked in {blocked:?}"
+        );
+    }
+}
+
+#[test]
+fn a_binary_file_is_still_scanned_for_secrets() {
+    let fixture = fixture();
+    let key = ["AKIA", "IOSFODNN7", "EXAMPLE"].concat();
+    let config = GateConfig {
+        allow_binary: true,
+        ..GateConfig::default()
+    };
+    let report = evaluate(&fixture, config, "g10", |dir| {
+        let mut bytes = vec![0u8, 1, 2, 3];
+        bytes.extend_from_slice(key.as_bytes());
+        std::fs::write(dir.join("data.bin"), bytes).unwrap();
+    });
+    assert!(
+        reasons(&report)
+            .iter()
+            .any(|line| line.contains("data.bin") && line.contains("aws_access_key")),
+        "{:?}",
+        report.blocks
+    );
+}
+
+#[test]
+fn a_dot_git_directory_in_any_case_cannot_even_be_snapshotted() {
+    let fixture = fixture();
+    fixture.isolation.begin_run("g11").unwrap();
+    let node = fixture.isolation.prepare_node("g11", "write").unwrap();
+    std::fs::create_dir_all(node.path.join("sub/.GIT")).unwrap();
+    std::fs::write(node.path.join("sub/.GIT/config"), "x\n").unwrap();
+    assert!(
+        fixture
+            .isolation
+            .snapshot(&node, &provenance("g11", "write"))
+            .is_err()
+    );
+}
