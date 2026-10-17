@@ -22,3 +22,21 @@ transport = "genai"
 adapter = "deepseek"
 base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_API_KEY"
+
+# Prices are integer micro dollars per million tokens. These are examples only:
+# copy the current numbers from your provider's price list and bump the version.
+[pricing]
+version = "example"
+
+[pricing.models."anthropic/claude-sonnet-5-5"]
+input = 3000000
+output = 15000000
+cache_read = 300000
+cache_write = 3750000
+
+# Hard caps for every session unless a request sets its own. With none set,
+# a session is capped at 5,000,000 tokens. The soft cap tells the model to
+# wrap up; the hard cap ends the prompt.
+[budget]
+max_tokens = 5000000
+soft_percent = 80

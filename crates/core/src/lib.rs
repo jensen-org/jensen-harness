@@ -4,6 +4,7 @@
 //! its own tool calls itself.
 
 pub mod agent;
+pub mod budget;
 pub mod compact;
 pub mod providers;
 pub mod sandbox;
