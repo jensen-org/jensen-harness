@@ -113,6 +113,7 @@ pub struct ToolSet {
     policy: SandboxPolicy,
     store: RawStore,
     shell_timeout: Duration,
+    read_only: bool,
 }
 
 impl std::fmt::Debug for ToolSet {
@@ -166,7 +167,31 @@ impl ToolSet {
             policy,
             store,
             shell_timeout: shell::DEFAULT_TIMEOUT,
+            read_only: false,
         }
+    }
+
+    /// Refuses `edit` and `shell` with an error the model can read, so the
+    /// tool list the provider sees (and caches) does not change.
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    /// Runs `command` in the sandbox and returns its raw result, for the
+    /// harness itself rather than the model.
+    ///
+    /// # Errors
+    /// [`ToolSetError::Sandbox`] when the command could not be started.
+    pub async fn run_command(
+        &self,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<shell::ShellResult, ToolSetError> {
+        shell::run_with_timeout(self.sandbox.as_ref(), &self.policy, command, timeout)
+            .await
+            .map_err(|error| ToolSetError::Sandbox(error.to_string()))
     }
 
     #[must_use]
@@ -248,6 +273,9 @@ impl ToolSet {
     /// [`ToolSetError`] for a failure of the harness itself. Everything the
     /// model got wrong is an `Ok` reply with `is_error` set.
     pub async fn invoke(&self, name: &str, input: &Value) -> Result<ToolReply, ToolSetError> {
+        if self.read_only && matches!(name, "edit" | "shell") {
+            return Ok(ToolReply::model_error(name, "this agent is read only"));
+        }
         match name {
             "read" => self.read(input),
             "edit" => self.edit(input),

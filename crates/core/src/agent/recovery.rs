@@ -221,6 +221,17 @@ fn replay(session_id: &str, events: &[Event]) -> Result<Recovered, AgentError> {
             EventKind::PromptFinished => open = None,
             EventKind::CacheLow => cache_alerted = true,
             EventKind::ModelFailed | EventKind::BudgetExhausted => {}
+            EventKind::WorkflowStarted
+            | EventKind::NodeStarted
+            | EventKind::NodeFinished
+            | EventKind::NodeSkipped
+            | EventKind::WorkflowFinished => {
+                return Err(AgentError::Journal(format!(
+                    "{} {} is a workflow event in a session journal",
+                    event.kind.as_str(),
+                    event.id
+                )));
+            }
         }
     }
     let created = created.ok_or_else(|| {

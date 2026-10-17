@@ -10,6 +10,7 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+async-trait = "0.1"
 blake3 = "1"
 cel = "0.15"
 dagrs = "0.9"
@@ -21,6 +22,8 @@ serde = { version = "1", features = ["derive"] }
 serde-saphyr = "2"
 serde_json = "1"
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-util = "0.7"
 
 [lints]
 workspace = true

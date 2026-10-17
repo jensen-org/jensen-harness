@@ -2127,6 +2127,7 @@ dependencies = [
 name = "jensen-harness-workflow"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "blake3",
  "cel",
  "dagrs",
@@ -2138,6 +2139,8 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "thiserror",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
