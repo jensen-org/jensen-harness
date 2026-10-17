@@ -29,7 +29,22 @@ fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_not_found| path.to_path_buf())
 }
 
+/// Rewrites `path`, which was built against `original_root` (typically
+/// `worktree.join(".git")`), onto `canonical_root`. This keeps an extra
+/// rule's resolved prefix identical to the worktree's own resolved prefix
+/// even when `path` itself does not exist yet to canonicalize directly: a
+/// deny rule built from a path that resolved independently, and possibly
+/// inconsistently, would risk not actually nesting under the worktree's own
+/// resolved allow rule, silently failing to override it.
+fn rebase(original_root: &Path, canonical_root: &Path, path: &Path) -> PathBuf {
+    match path.strip_prefix(original_root) {
+        Ok(suffix) => canonical_root.join(suffix),
+        Err(_not_nested) => canonical(path),
+    }
+}
+
 fn profile(policy: &SandboxPolicy) -> String {
+    let worktree = canonical(&policy.worktree);
     let mut lines = vec![
         "(version 1)".to_string(),
         "(deny default)".to_string(),
@@ -37,17 +52,15 @@ fn profile(policy: &SandboxPolicy) -> String {
         "(allow process-exec)".to_string(),
         "(allow file-read*)".to_string(),
         "(allow signal (target self))".to_string(),
-        format!(
-            "(allow file-write* (subpath \"{}\"))",
-            quote(&canonical(&policy.worktree))
-        ),
+        format!("(allow file-write* (subpath \"{}\"))", quote(&worktree)),
         format!(
             "(allow file-write* (subpath \"{}\"))",
             quote(&canonical(&policy.scratch))
         ),
     ];
     for rule in &policy.extra_rules {
-        let subpath = format!("(subpath \"{}\")", quote(&canonical(&rule.path)));
+        let resolved = rebase(&policy.worktree, &worktree, &rule.path);
+        let subpath = format!("(subpath \"{}\")", quote(&resolved));
         match rule.mode {
             FsMode::Deny => lines.push(format!("(deny file-write* {subpath})")),
             FsMode::ReadOnly => lines.push(format!("(deny file-write* {subpath})")),
@@ -105,7 +118,7 @@ impl Sandbox for Seatbelt {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{Seatbelt, profile};
     use crate::sandbox::{Sandbox, SandboxPolicy};
@@ -124,6 +137,29 @@ mod tests {
             worktree_allow < git_deny,
             "the git deny must come after the worktree allow so it wins"
         );
+    }
+
+    #[test]
+    fn the_git_denys_resolved_prefix_matches_the_worktrees_resolved_prefix() {
+        // A real, existing worktree under the system temp root, so this
+        // proves the fix for a real /var -> /private/var style symlink, not
+        // just the no-op fallback path a nonexistent worktree exercises.
+        let worktree = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::confined_to(worktree.path());
+        let text = profile(&policy);
+        let canonical_worktree = worktree.path().canonicalize().unwrap();
+        let canonical_worktree = canonical_worktree.display().to_string();
+        let worktree_allow = text
+            .find(&format!(
+                "allow file-write* (subpath \"{canonical_worktree}\")"
+            ))
+            .expect("the worktree allow rule must use the canonical worktree path");
+        let git_deny = text
+            .find(&format!(
+                "deny file-write* (subpath \"{canonical_worktree}/.git\")"
+            ))
+            .expect("the git deny rule must be nested under the same canonical prefix");
+        assert!(worktree_allow < git_deny);
     }
 
     #[test]

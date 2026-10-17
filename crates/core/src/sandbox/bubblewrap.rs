@@ -66,15 +66,29 @@ impl Sandbox for Bubblewrap {
             "/dev".to_string(),
             "--proc".to_string(),
             "/proc".to_string(),
+            // A read-only bind of / still leaves every Unix domain socket
+            // under it connectable (read-only blocks writes to the inode,
+            // not AF_UNIX connect), so /run and /tmp, the usual home of a
+            // container runtime's or a display server's socket, are masked
+            // with a private tmpfs before anything more specific is bound
+            // back on top of them.
+            "--tmpfs".to_string(),
+            "/tmp".to_string(),
+            "--tmpfs".to_string(),
+            "/run".to_string(),
+            "--tmpfs".to_string(),
+            "/var/run".to_string(),
             "--bind".to_string(),
             worktree.clone(),
             worktree,
             "--bind".to_string(),
             tmp.clone(),
             tmp,
+            "--unshare-pid".to_string(),
+            "--unshare-ipc".to_string(),
+            "--new-session".to_string(),
             "--die-with-parent".to_string(),
         ];
-        let mut unsupported = Vec::new();
         for rule in &policy.extra_rules {
             let path = rule.path.to_string_lossy().into_owned();
             match rule.mode {
@@ -90,18 +104,22 @@ impl Sandbox for Bubblewrap {
                 }
             }
         }
+        // A policy this backend cannot satisfy is refused outright rather
+        // than downgraded to something broader: granting full network
+        // access in place of an unimplemented proxy allowlist would be the
+        // opposite of what was asked, and a caller that assumed the
+        // narrower policy took effect would never know otherwise.
         let network_tier = match policy.network {
             NetworkPolicy::None => {
                 wrapped.push("--unshare-net".to_string());
                 "none"
             }
             NetworkPolicy::ProxyAllowlist { .. } => {
-                unsupported.push(
-                    "a proxy allowlist is not yet enforced by this backend, only full or no \
-                     network"
+                return Err(SandboxError::Policy(
+                    "a proxy allowlist is not yet enforced by the bubblewrap backend, and it \
+                     refuses to substitute full network access for it"
                         .to_string(),
-                );
-                "full"
+                ));
             }
             NetworkPolicy::Full => "full",
         };
@@ -115,7 +133,7 @@ impl Sandbox for Bubblewrap {
                 backend: "bubblewrap",
                 filesystem_rules_applied: 3 + policy.extra_rules.len(),
                 network_tier,
-                unsupported,
+                unsupported: Vec::new(),
             },
         })
     }
@@ -159,5 +177,35 @@ mod tests {
         let confined = Bubblewrap.confine(&policy, "/bin/true", &[]).unwrap();
         assert!(confined.args.iter().any(|arg| arg == "--unshare-net"));
         assert_eq!(confined.report.network_tier, "none");
+    }
+
+    #[test]
+    fn confine_masks_the_usual_socket_directories_and_isolates_pid_and_ipc() {
+        let policy = SandboxPolicy::confined_to("/repo/task");
+        let confined = Bubblewrap.confine(&policy, "/bin/true", &[]).unwrap();
+        for masked in ["/tmp", "/run", "/var/run"] {
+            assert!(
+                confined.args.iter().any(|arg| arg == masked),
+                "{masked} must be masked with a private tmpfs"
+            );
+        }
+        for flag in ["--unshare-pid", "--unshare-ipc", "--new-session"] {
+            assert!(
+                confined.args.iter().any(|arg| arg == flag),
+                "{flag} must be set"
+            );
+        }
+    }
+
+    #[test]
+    fn confine_refuses_a_proxy_allowlist_instead_of_granting_full_network() {
+        use crate::sandbox::NetworkPolicy;
+
+        let mut policy = SandboxPolicy::confined_to("/repo/task");
+        policy.network = NetworkPolicy::ProxyAllowlist { port: 8080 };
+
+        let error = Bubblewrap.confine(&policy, "/bin/true", &[]).unwrap_err();
+
+        assert!(matches!(error, crate::sandbox::SandboxError::Policy(_)));
     }
 }
