@@ -18,6 +18,7 @@ mod core_sandbox;
 mod core_sandbox_bubblewrap;
 mod core_sandbox_seatbelt;
 mod core_sandbox_seatbelt_denies;
+mod core_secrets;
 mod core_tools_confinement;
 mod core_tools_edit;
 mod core_tools_glob;

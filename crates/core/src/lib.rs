@@ -6,4 +6,5 @@
 pub mod agent;
 pub mod providers;
 pub mod sandbox;
+pub mod secrets;
 pub mod tools;

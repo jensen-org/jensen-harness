@@ -4,6 +4,7 @@
 //! behavior on either transport. The real logic lives in `lib.rs`; this is
 //! the thin process entry point.
 
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -13,6 +14,7 @@ use jensen_harness::engine::Engine;
 use jensen_harness::rpc;
 use jensen_harness::socket::{current_uid, remove_stale_socket};
 use jensen_harness_core::providers::config::ProviderRegistry;
+use jensen_harness_core::secrets::{SystemSecrets, store_in_keychain};
 use tokio::io::{BufReader, stdin, stdout};
 use tokio::net::UnixListener;
 
@@ -41,6 +43,17 @@ enum Command {
     },
     /// Run headless, speaking JSON-RPC over stdio until it closes.
     Run,
+    /// Manage provider API keys held in the OS keychain.
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthAction {
+    /// Store a provider's API key, read from one line of stdin.
+    Set { provider: String },
 }
 
 fn config_path(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
@@ -51,15 +64,34 @@ fn config_path(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     Ok(base.join("jensen-harness").join("providers.toml"))
 }
 
-fn build_engine(config: Option<PathBuf>, model: Option<String>) -> anyhow::Result<Engine> {
+fn load_registry(config: Option<PathBuf>) -> anyhow::Result<ProviderRegistry> {
     let path = config_path(config)?;
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("the provider config {} could not be read", path.display()))?;
-    let registry = ProviderRegistry::from_toml(&text)?;
+    Ok(ProviderRegistry::from_toml(&text)?)
+}
+
+fn auth_set(registry: &ProviderRegistry, provider: &str) -> anyhow::Result<()> {
+    let (service, user) = registry.keychain_location(provider)?;
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .context("the key could not be read from stdin")?;
+    let secret = line.trim();
+    anyhow::ensure!(!secret.is_empty(), "stdin held no key");
+    store_in_keychain(&service, &user, secret)?;
+    writeln!(
+        std::io::stderr(),
+        "stored the key for {provider} in the keychain"
+    )?;
+    Ok(())
+}
+
+fn build_engine(registry: &ProviderRegistry, model: Option<String>) -> anyhow::Result<Engine> {
     let address = model
         .or_else(|| registry.default_model().map(str::to_string))
         .context("no model was chosen: pass --model or set default_model in the config")?;
-    let (provider, model_id) = registry.resolve(&address, &|name| std::env::var(name).ok())?;
+    let (provider, model_id) = registry.resolve(&address, &SystemSecrets)?;
     Ok(Engine::new(provider, model_id))
 }
 
@@ -69,8 +101,16 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
-    let engine = std::sync::Arc::new(build_engine(cli.config, cli.model)?);
+    let registry = load_registry(cli.config)?;
+    if let Command::Auth {
+        action: AuthAction::Set { provider },
+    } = &cli.command
+    {
+        return auth_set(&registry, provider);
+    }
+    let engine = std::sync::Arc::new(build_engine(&registry, cli.model)?);
     match cli.command {
+        Command::Auth { .. } => {}
         Command::Run => {
             let reader = BufReader::new(stdin());
             rpc::serve_connection(reader, stdout(), engine).await?;

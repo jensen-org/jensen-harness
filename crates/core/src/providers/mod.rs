@@ -105,8 +105,10 @@ pub struct CompletionResponse {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ProviderError {
-    #[error("{provider}'s API key is unset: set the {env_var} environment variable")]
-    MissingApiKey { provider: String, env_var: String },
+    #[error("{provider}'s API key is missing: {hint}")]
+    MissingApiKey { provider: String, hint: String },
+    #[error(transparent)]
+    Secret(#[from] crate::secrets::SecretError),
     #[error("{provider} returned an error: {message}")]
     Upstream { provider: String, message: String },
     #[error("the provider's response could not be read: {0}")]
@@ -128,20 +130,6 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, ProviderError>;
-}
-
-/// # Errors
-/// Returns [`ProviderError::MissingApiKey`] when `env_var` has no value in
-/// `lookup`.
-pub fn require_api_key(
-    provider: &str,
-    env_var: &str,
-    lookup: &dyn Fn(&str) -> Option<String>,
-) -> Result<String, ProviderError> {
-    lookup(env_var).ok_or_else(|| ProviderError::MissingApiKey {
-        provider: provider.to_string(),
-        env_var: env_var.to_string(),
-    })
 }
 
 pub(crate) const MAX_OUTPUT_TOKENS: u32 = 16_384;
