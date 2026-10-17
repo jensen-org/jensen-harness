@@ -451,3 +451,133 @@ fn the_forge_is_chosen_from_the_remote_host_and_the_config() {
         Err(RunError::Provider(_))
     ));
 }
+
+#[tokio::test]
+async fn blocked_work_is_never_published() {
+    let fixture = fixture();
+    let origin = with_origin(&fixture);
+    let api = github_api(false).await;
+    let store = Store::in_memory().unwrap();
+    let provider: Arc<dyn Provider> = Arc::new(Scripted::of(vec![
+        calls_tool(
+            "t1",
+            "edit",
+            json!({"path": "a.txt", "find": "alpha", "replace": "alpha+"}),
+        ),
+        says("done"),
+    ]));
+    let runner = Runner {
+        store,
+        host: Arc::new(ForgeHost {
+            provider,
+            repo: fixture.repo.clone(),
+            isolation: fixture.isolation.clone(),
+            target: ForgeTarget {
+                kind: ForgeKind::GitHub,
+                host: "github.com".to_owned(),
+                api_base: Some(api.uri()),
+                project: "acme/app".to_owned(),
+                token: Secret::new(TOKEN),
+            },
+            budget: BudgetSettings::default(),
+        }),
+        checkpoints: Arc::new(MemoryRunStore::new()),
+    };
+    let failing = FLOW.replace("run: \"true\"", "run: \"false\"");
+
+    let report = runner
+        .start(
+            load(&failing).unwrap(),
+            StartRequest {
+                run_id: "f6".to_owned(),
+                inputs: Values::new(),
+                caps: Caps::default(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        report.outcomes.get("promote").map(String::as_str),
+        Some("blocked")
+    );
+    assert!(!report.outcomes.contains_key("publish"));
+    assert!(api.received_requests().await.unwrap().is_empty());
+    let refs = git(&origin.path, &["for-each-ref", "refs/heads"]);
+    assert!(!refs.contains("jensen/f6"), "{refs}");
+}
+
+async fn header_seen(host: &str) -> Vec<String> {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let fixture = fixture();
+    let target = ForgeTarget {
+        kind: ForgeKind::GitHub,
+        host: host.to_owned(),
+        api_base: None,
+        project: "acme/app".to_owned(),
+        token: Secret::new(TOKEN),
+    };
+    let result = jensen_harness_promote::push::push(
+        &fixture.isolation.objects_dir().unwrap(),
+        &git(&fixture.repo, &["rev-parse", "HEAD"]),
+        &format!("{}/acme/app.git", server.uri()),
+        "jensen/x",
+        &target,
+    )
+    .await;
+    assert!(result.is_err());
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|request| request.headers.get("authorization"))
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_token_is_sent_only_to_the_forge_host() {
+    use base64::Engine as _;
+    let expected = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{TOKEN}"))
+    );
+    let to_the_forge = header_seen("127.0.0.1").await;
+    assert!(
+        !to_the_forge.is_empty() && to_the_forge.iter().all(|value| *value == expected),
+        "{to_the_forge:?}"
+    );
+    let elsewhere = header_seen("github.com").await;
+    assert!(
+        elsewhere.is_empty(),
+        "the token went to another host: {elsewhere:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_option_shaped_remote_is_refused() {
+    let fixture = fixture();
+    let target = ForgeTarget {
+        kind: ForgeKind::GitHub,
+        host: "github.com".to_owned(),
+        api_base: None,
+        project: "acme/app".to_owned(),
+        token: Secret::new(TOKEN),
+    };
+    let error = jensen_harness_promote::push::push(
+        &fixture.isolation.objects_dir().unwrap(),
+        &git(&fixture.repo, &["rev-parse", "HEAD"]),
+        "--receive-pack=touch /tmp/pwned",
+        "jensen/x",
+        &target,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, PromoteError::Push(_)));
+}

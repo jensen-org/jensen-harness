@@ -170,7 +170,9 @@ pub async fn execute(
         interrupted(node)
     } else {
         journal_event(shared, EventKind::NodeStarted, payload.clone()).await?;
-        run_kind(shared, id, node, ordinal, inputs).await?
+        let finished = run_kind(shared, id, node, ordinal, inputs).await?;
+        shared.release_root(id)?;
+        finished
     };
     let encoded =
         serde_json::to_string(&finished).map_err(|error| RunError::Engine(error.to_string()))?;
@@ -666,7 +668,7 @@ async fn run_publish(shared: &Shared, id: &str, node: &PublishNode) -> Result<Fi
     let push_url = isolation.remote_url("origin", true)?;
     let target = shared.host.forge(&remote)?;
     let head = format!("jensen/{}", shared.run_id);
-    let base = isolation.base_branch()?;
+    let base = recorded_base(shared).await?;
     journal_event(
         shared,
         EventKind::PublishStarted,
@@ -704,4 +706,21 @@ async fn run_publish(shared: &Shared, id: &str, node: &PublishNode) -> Result<Fi
         outcome: "ok".to_owned(),
         detail: None,
     })
+}
+
+async fn recorded_base(shared: &Shared) -> Result<String, RunError> {
+    let events = shared
+        .store
+        .events(&journal_session(&shared.run_id))
+        .await?;
+    events
+        .iter()
+        .filter(|event| event.kind == EventKind::WorkflowStarted)
+        .find_map(|event| event.payload.get("base_branch").and_then(Value::as_str))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            RunError::Engine(
+                "the run did not record the branch to open the request against".to_owned(),
+            )
+        })
 }

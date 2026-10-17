@@ -27,6 +27,25 @@ pub(crate) fn create(
     Ok(())
 }
 
+pub(crate) fn create_detached(
+    repo: &gix::Repository,
+    workspaces: &Path,
+    handle: &NodeWorktree,
+    commit: gix::ObjectId,
+) -> Result<(), PromoteError> {
+    let parent = handle.path.parent().unwrap_or(workspaces);
+    std::fs::create_dir_all(parent).map_err(|error| io(parent, error))?;
+    restrict(workspaces)?;
+    repo.add_worktree(
+        &handle.path,
+        Head::Detached(commit),
+        Discard,
+        &AtomicBool::new(false),
+    )
+    .map_err(git)?;
+    Ok(())
+}
+
 pub(crate) fn verify(repo: &Path, handle: &NodeWorktree) -> Result<(), PromoteError> {
     let tampered = |reason: String| PromoteError::TamperedWorktree {
         node: handle.node.clone(),

@@ -4063,6 +4063,7 @@ name = "jensen-harness-tests"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "dagrs",
  "jensen-harness",
  "jensen-harness-core",

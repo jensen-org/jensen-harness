@@ -25,12 +25,8 @@ pub trait ModelSource: Send + Sync {
     /// its key is missing.
     fn resolve(&self, address: Option<&str>) -> Result<ResolvedModel, ProviderError>;
 
-    /// The `provider_id/model_id` a workflow role is bound to, if any.
     fn role(&self, role: &str) -> Option<String>;
 
-    /// # Errors
-    /// [`RunError`] when the remote is not a forge this config knows or its
-    /// token is missing.
     fn forge_target(&self, remote_url: &str) -> Result<ForgeTarget, RunError>;
 }
 

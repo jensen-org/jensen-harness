@@ -82,8 +82,18 @@ impl Shared {
     pub fn root_for(&self, id: &str) -> Result<PathBuf, RunError> {
         match self.workflow.writer_scope(id) {
             Some(writer) => Ok(self.isolation()?.prepare_node(&self.run_id, writer)?.path),
+            None if self.workflow.needs_repository() => {
+                Ok(self.isolation()?.prepare_reader(&self.run_id, id)?.path)
+            }
             None => Ok(self.host.worktree().to_path_buf()),
         }
+    }
+
+    pub fn release_root(&self, id: &str) -> Result<(), RunError> {
+        if self.workflow.writer_scope(id).is_none() && self.workflow.needs_repository() {
+            self.isolation()?.release_reader(&self.run_id, id)?;
+        }
+        Ok(())
     }
 
     pub fn tools_for(&self, id: &str, access: Access) -> Result<ToolSet, RunError> {
@@ -610,13 +620,24 @@ impl Runner {
                 worktree: self.host.worktree().to_string_lossy().into_owned(),
             })
             .await?;
+        let mut base_branch = None;
         if shared.workflow.needs_repository() {
-            shared.isolation()?.begin_run(&shared.run_id)?;
+            let isolation = shared.isolation()?;
+            isolation.begin_run(&shared.run_id)?;
+            if shared
+                .workflow
+                .spec()
+                .nodes
+                .values()
+                .any(|node| matches!(node, NodeSpec::Publish(_)))
+            {
+                base_branch = Some(isolation.base_branch()?);
+            }
         }
         nodes::journal_event(
             &shared,
             EventKind::WorkflowStarted,
-            json!({"spec_hash": shared.workflow.hash()}),
+            json!({"spec_hash": shared.workflow.hash(), "base_branch": base_branch}),
         )
         .await?;
         self.drive(&shared, seed, cancel).await

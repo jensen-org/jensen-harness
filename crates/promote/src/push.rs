@@ -44,12 +44,16 @@ async fn run(
     Err(PromoteError::Push(target.token.redact(stderr.trim())))
 }
 
-fn host_of(url: &str) -> Option<(String, String)> {
+fn credential_scope(url: &str) -> Option<(String, String)> {
     let parsed = url::Url::parse(url).ok()?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return None;
     }
     let host = parsed.host_str()?.to_ascii_lowercase();
+    let loopback = matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]" | "::1");
+    if parsed.scheme() == "http" && !loopback {
+        return None;
+    }
     let origin = match parsed.port() {
         Some(port) => format!("{}://{host}:{port}/", parsed.scheme()),
         None => format!("{}://{host}/", parsed.scheme()),
@@ -64,6 +68,11 @@ pub async fn push(
     remote_branch: &str,
     target: &ForgeTarget,
 ) -> Result<(), PromoteError> {
+    if remote_url.starts_with('-') || remote_branch.starts_with('-') {
+        return Err(PromoteError::Push(
+            "the remote or branch looks like an option".to_owned(),
+        ));
+    }
     let scratch = tempfile::tempdir().map_err(|error| PromoteError::Io(error.to_string()))?;
     let dir = scratch.path();
     run(
@@ -93,7 +102,7 @@ pub async fn push(
     .await?;
     let mut command = git(dir);
     let mut count = 0;
-    if let Some((host, origin)) = host_of(remote_url)
+    if let Some((host, origin)) = credential_scope(remote_url)
         && host == target.host
     {
         let user = match target.kind {
@@ -112,7 +121,8 @@ pub async fn push(
     }
     command
         .env("GIT_CONFIG_COUNT", count.to_string())
-        .args(["push", "--porcelain"])
+        .env("GIT_ALLOW_PROTOCOL", "file:https:ssh:http")
+        .args(["push", "--porcelain", "--"])
         .arg(remote_url)
         .arg(format!("refs/heads/push:refs/heads/{remote_branch}"));
     run(command, target).await

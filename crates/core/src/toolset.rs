@@ -160,8 +160,6 @@ impl ToolSet {
         ))
     }
 
-    /// # Errors
-    /// [`ToolError::Io`] when `root` is missing or not a directory.
     pub fn for_worktree_access(root: &Path, access: Access) -> Result<Self, ToolError> {
         let worktree = Worktree::open(root)?;
         let policy = match access {

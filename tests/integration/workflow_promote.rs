@@ -267,8 +267,19 @@ nodes:
 async fn a_run_dropped_after_promotion_resumes_without_a_second_commit() {
     let fixture = fixture();
     let checkpoints = tempfile::tempdir().unwrap();
-    let after = "  after: { kind: command, run: 'touch after.started; while [ ! -f go ]; do sleep 0.05; done', idempotent: true, timeout_secs: 30 }\nedges:";
-    let yaml = flow("true").replacen("edges:", after, 1) + "  - { from: promote, to: after }\n";
+    let go = fixture.workspaces.join("go");
+    let after = format!(
+        "  after: {{ kind: command, run: 'touch after.started; while [ ! -f {} ]; do sleep 0.05; done; cat a.txt', output: seen, idempotent: true, timeout_secs: 30 }}\nedges:",
+        go.display()
+    );
+    let yaml = flow("true")
+        .replacen(
+            "channels:",
+            "channels:\n  seen: { schema: { type: object } }",
+            1,
+        )
+        .replacen("edges:", &after, 1)
+        + "  - { from: promote, to: after }\n";
     let provider: Arc<dyn Provider> = Arc::new(Scripted::of(vec![edit("alpha+"), says("done")]));
     let store = jensen_harness_core::store::Store::in_memory().unwrap();
     let build = |provider: Arc<dyn Provider>| Runner {
@@ -298,7 +309,11 @@ async fn a_run_dropped_after_promotion_resumes_without_a_second_commit() {
                 .await
         }
     });
-    let marker = fixture.repo.join("after.started");
+    let marker = fixture
+        .workspaces
+        .join("p6")
+        .join("after.read")
+        .join("after.started");
     let waited = std::time::Instant::now();
     while !marker.exists() {
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -309,7 +324,7 @@ async fn a_run_dropped_after_promotion_resumes_without_a_second_commit() {
     }
     running.abort();
     let _ = running.await;
-    std::fs::write(fixture.repo.join("go"), "").unwrap();
+    std::fs::write(&go, "").unwrap();
     let branch = Isolation::integration_ref("p6");
     let before = git(&fixture.repo, &["rev-parse", &branch]);
 
@@ -322,4 +337,14 @@ async fn a_run_dropped_after_promotion_resumes_without_a_second_commit() {
     assert_eq!(report.status, RunStatus::Succeeded);
     assert_eq!(git(&fixture.repo, &["rev-parse", &branch]), before);
     assert_eq!(commits(&fixture, &branch), 1);
+    assert_eq!(
+        report.channels["seen"]["stdout"], "alpha+\n",
+        "the check saw the promoted work"
+    );
+    assert_eq!(
+        git(&fixture.repo, &["status", "--porcelain"]),
+        "",
+        "the user's checkout is untouched"
+    );
+    assert!(!fixture.workspaces.join("p6").join("after.read").exists());
 }

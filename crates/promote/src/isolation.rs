@@ -243,6 +243,41 @@ impl Isolation {
         Ok(self.open_repo()?.common_dir().join("objects"))
     }
 
+    pub fn prepare_reader(&self, run: &str, node: &str) -> Result<NodeWorktree, PromoteError> {
+        checked(run)?;
+        checked(node)?;
+        let repo = self.open_repo()?;
+        let head = tip_of(&repo, &Self::integration_ref(run))?
+            .ok_or_else(|| PromoteError::Git(format!("run {run} has no integration branch")))?;
+        let handle = NodeWorktree {
+            run: run.to_owned(),
+            node: node.to_owned(),
+            path: self.workspaces.join(run).join(format!("{node}.read")),
+            branch: String::new(),
+        };
+        if handle.path.exists() {
+            worktree::remove(&repo, &handle)?;
+        }
+        worktree::create_detached(&repo, &self.workspaces, &handle, head)?;
+        worktree::verify(&self.repo, &handle)?;
+        Ok(handle)
+    }
+
+    pub fn release_reader(&self, run: &str, node: &str) -> Result<(), PromoteError> {
+        checked(run)?;
+        checked(node)?;
+        let handle = NodeWorktree {
+            run: run.to_owned(),
+            node: node.to_owned(),
+            path: self.workspaces.join(run).join(format!("{node}.read")),
+            branch: String::new(),
+        };
+        if handle.path.exists() {
+            worktree::remove(&self.open_repo()?, &handle)?;
+        }
+        Ok(())
+    }
+
     pub fn remove_node(&self, handle: &NodeWorktree) -> Result<(), PromoteError> {
         worktree::remove(&self.open_repo()?, handle)
     }

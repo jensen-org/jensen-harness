@@ -251,9 +251,6 @@ impl ProviderRegistry {
         self.forges.get(name)
     }
 
-    /// # Errors
-    /// [`ProviderError::MissingApiKey`] when the token is not there and
-    /// [`ProviderError::Secret`] when the keychain itself fails.
     pub fn forge_token(
         &self,
         name: &str,

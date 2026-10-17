@@ -38,6 +38,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 dagrs = "0.9"
 tokio-util = "0.7"
+base64 = "0.23"
 proptest = "1"
 
 [lints]
