@@ -37,6 +37,9 @@ tree-sitter-go = "0.25"
 shlex = "2"
 strip-ansi-escapes = "0.2"
 cap-fs-ext = "4"
+rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite_migration = "2.6"
+ulid = "3"
 
 [lints]
 workspace = true

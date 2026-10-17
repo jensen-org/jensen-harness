@@ -9,5 +9,6 @@ pub mod compact;
 pub mod providers;
 pub mod sandbox;
 pub mod secrets;
+pub mod store;
 pub mod tools;
 pub mod toolset;
