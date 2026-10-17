@@ -161,11 +161,14 @@ impl Confiner {
     ) -> Result<(sandbox::Confined, PathBuf), ToolSetError> {
         let mut policy = self.policy.clone();
         policy.network = network;
+        let worktree = policy.worktree.clone();
+        policy
+            .extra_rules
+            .retain(|rule| !(rule.path == worktree && rule.mode == sandbox::FsMode::ReadOnly));
         if !writable {
-            policy.extra_rules.insert(
-                0,
-                sandbox::FsRule::new(policy.worktree.clone(), sandbox::FsMode::ReadOnly),
-            );
+            policy
+                .extra_rules
+                .insert(0, sandbox::FsRule::new(worktree, sandbox::FsMode::ReadOnly));
         }
         std::fs::create_dir_all(&policy.scratch)
             .map_err(|error| ToolSetError::Infrastructure(error.to_string()))?;

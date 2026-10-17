@@ -23,7 +23,12 @@ pub struct Daemon {
 
 impl Daemon {
     pub fn start(config: &Path, state: &Path) -> Self {
+        Self::start_with(config, state, &[])
+    }
+
+    pub fn start_with(config: &Path, state: &Path, env: &[(&str, &str)]) -> Self {
         let mut child = Command::new(binary_path())
+            .envs(env.iter().copied())
             .arg("--config")
             .arg(config)
             .arg("--state")

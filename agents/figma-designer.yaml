@@ -1,0 +1,15 @@
+description: Designs screens by driving Figma through its MCP server.
+role: design
+prompt: Create the design the task asks for in Figma, then describe what you made as one JSON object.
+tools: read_only
+max_turns: 12
+skills: [design-review]
+mcp: [figma]
+inputs:
+  task: {}
+outputs:
+  design:
+    schema: { type: object }
+context:
+  inherit:
+    - { channel: task, mode: full }

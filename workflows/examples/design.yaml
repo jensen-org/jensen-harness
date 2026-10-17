@@ -1,0 +1,20 @@
+version: 1
+name: design
+description: An architect draws the plan, then a designer builds the screens from it.
+channels:
+  task: { schema: { type: string }, init: "" }
+  plan: { schema: { type: object } }
+  diagram: { schema: { type: object } }
+  design: { schema: { type: object } }
+nodes:
+  architect:
+    kind: agent
+    uses: architect
+  designer:
+    kind: agent
+    uses: figma-designer
+    reads: [plan]
+    context:
+      from_nodes: [architect]
+edges:
+  - { from: architect, to: designer }

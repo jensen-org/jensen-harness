@@ -26,6 +26,27 @@ struct Fixture {
     tool_router: ToolRouter<Self>,
 }
 
+fn log(line: &str) -> Result<(), ErrorData> {
+    let Ok(path) = std::env::var("TESTKIT_LOG") else {
+        return Ok(());
+    };
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    writeln!(file, "{line}").map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
+async fn pause(variable: &str) {
+    if let Some(seconds) = std::env::var(variable)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+    }
+}
+
 fn text(value: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![ContentBlock::text(value.into())])
 }
@@ -40,6 +61,8 @@ impl Fixture {
 
     #[tool(description = "Echo the text back", annotations(read_only_hint = true))]
     async fn echo(&self, Parameters(input): Parameters<Text>) -> Result<CallToolResult, ErrorData> {
+        log(&format!("echo:{}", input.text))?;
+        pause("TESTKIT_ECHO_DELAY").await;
         Ok(text(input.text))
     }
 
@@ -54,15 +77,8 @@ impl Fixture {
 
     #[tool(description = "Draw a shape and remember it")]
     async fn draw(&self, Parameters(input): Parameters<Text>) -> Result<CallToolResult, ErrorData> {
-        if let Ok(path) = std::env::var("TESTKIT_LOG") {
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-            writeln!(file, "{}", input.text)
-                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        }
+        log(&format!("draw:{}", input.text))?;
+        pause("TESTKIT_DRAW_DELAY").await;
         Ok(text(format!("drew {}", input.text)))
     }
 

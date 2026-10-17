@@ -128,6 +128,38 @@ work and never write into your checkout.
 Not covered yet: a denylist of dangerous commands, a command audit log, circuit breakers on repeated
 failures, and waiting for CI results from the forge.
 
+## Extending agent nodes
+
+An agent node is a template plus overrides, so a design agent, an architect or a reviewer is a file, not
+code.
+
+- **Templates.** `uses: figma-designer` on an agent node pulls `figma-designer.yaml` from an `agents/`
+  directory next to the workflow, from `[library] paths` in `providers.toml`, or from the user config
+  directory. Lists append, maps merge and scalars override. A template's `inputs` become `reads` and its
+  `outputs` become `writes` (their schemas must equal the channel's). A missing, twice found or cyclic template
+  is a load error naming the node, and `jensen-harness workflow validate --resolved` prints the merged
+  result. The resolved spec is what is hashed and stored, so a run never reads the library again. See
+  `agents/` and `workflows/examples/design.yaml`.
+- **Skills.** `skills: [name]` attaches [Agent Skills](https://agentskills.io/specification). Only names and
+  descriptions go in the system prompt; the `skill` tool loads the body or a bundled `references/` file.
+  Skills come from the user config directory and each library path's `skills/`; the repository's own
+  `skills/` is loaded only with `[skills] allow_project = true`, and a name found twice is an error.
+- **MCP.** `mcp: [figma]` attaches a server declared in `providers.toml` under `[mcp.servers.<name>]`, never in a
+  workflow. A stdio server runs inside the node's OS sandbox with only its `env_allow` variables and the
+  network closed unless the entry opens it; `access = "read_only"` hides every tool that is not marked
+  read only. Tools appear as `mcp__server__tool`, results are compacted like shell output, and after a
+  `kill -9` an unfinished read only call is run again while any other is reported to the model as
+  interrupted and never repeated. A remote server takes its token from the environment or keychain.
+- **Context.** An agent's `context` block can `inherit` channels (full or summarized), take the final answer of
+  upstream nodes (`from_nodes`), and `fetch` from `files`, `treesitter` outlines, `skill` bodies, `mcp`
+  resources or read only tools, and `lsp` (diagnostics, symbols, references from a server under
+  `[lsp.servers.<name>]`). `eager` sources are gathered once into the first prompt, which is journaled, so a
+  resume replays the same text; `lazy` sources become a `fetch_context` tool. A total budget drops what
+  does not fit and says so.
+
+An MCP or language server is code you chose to run. It is confined by the OS sandbox, but whatever it is
+allowed to reach (its token, the network you open, the worktree you make writable) it can use.
+
 ## Budget
 
 Every model call is reserved before it is made and settled with the provider's real usage after. Scopes

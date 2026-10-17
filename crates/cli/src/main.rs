@@ -67,17 +67,26 @@ enum WorkflowAction {
         file: PathBuf,
         #[arg(long)]
         resolved: bool,
+        #[arg(long)]
+        library: Vec<PathBuf>,
     },
     /// Print a workflow file's graph in Graphviz DOT.
-    Dot { file: PathBuf },
+    Dot {
+        file: PathBuf,
+        #[arg(long)]
+        library: Vec<PathBuf>,
+    },
 }
 
-fn load_workflow(file: &std::path::Path) -> anyhow::Result<jensen_harness_workflow::Workflow> {
+fn load_workflow(
+    file: &std::path::Path,
+    library: &[PathBuf],
+) -> anyhow::Result<jensen_harness_workflow::Workflow> {
     let yaml = std::fs::read_to_string(file)
         .with_context(|| format!("the workflow {} could not be read", file.display()))?;
     let library = jensen_harness_workflow::library::Library::for_workflow(
         file,
-        &[],
+        library,
         dirs::config_dir().map(|base| base.join("jensen-harness").join("agents")),
     );
     jensen_harness_workflow::load_with(&yaml, &library)
@@ -87,8 +96,12 @@ fn load_workflow(file: &std::path::Path) -> anyhow::Result<jensen_harness_workfl
 fn workflow_command(action: &WorkflowAction) -> anyhow::Result<()> {
     let mut out = std::io::stdout();
     match action {
-        WorkflowAction::Validate { file, resolved } => {
-            let workflow = load_workflow(file)?;
+        WorkflowAction::Validate {
+            file,
+            resolved,
+            library,
+        } => {
+            let workflow = load_workflow(file, library)?;
             if *resolved {
                 writeln!(out, "{}", serde_json::to_string_pretty(workflow.spec())?)?;
                 return Ok(());
@@ -101,8 +114,8 @@ fn workflow_command(action: &WorkflowAction) -> anyhow::Result<()> {
                 workflow.waves().len()
             )?;
         }
-        WorkflowAction::Dot { file } => {
-            writeln!(out, "{}", load_workflow(file)?.dot())?;
+        WorkflowAction::Dot { file, library } => {
+            writeln!(out, "{}", load_workflow(file, library)?.dot())?;
         }
     }
     Ok(())
