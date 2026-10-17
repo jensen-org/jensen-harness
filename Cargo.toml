@@ -1,0 +1,34 @@
+[package]
+name = "jensen-harness"
+version = "0.1.0"
+publish = false
+edition = "2024"
+rust-version = "1.97"
+license = "LicenseRef-Jensen-EULA-1.0"
+
+[lib]
+path = "src/lib.rs"
+
+[lints.rust]
+unused_qualifications = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+disallowed_methods = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+cast_lossless = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16
+strip = true

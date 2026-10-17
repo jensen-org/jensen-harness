@@ -1,0 +1,6 @@
+# Process-wide environment mutation is unsafe in a multi-threaded service. Use the injected
+# layout/login environment seams instead.
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "use an injected environment seam" },
+    { path = "std::env::remove_var", reason = "use an injected environment seam" },
+]

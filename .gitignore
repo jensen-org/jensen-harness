@@ -1,0 +1,5 @@
+/target
+**/*.sqlite
+**/*.sqlite-*
+.DS_Store
+.claude/settings.local.json
