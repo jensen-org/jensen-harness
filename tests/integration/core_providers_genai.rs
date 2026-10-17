@@ -130,7 +130,7 @@ async fn tool_results_go_back_as_tool_role_messages_and_errors_are_marked() {
         .find(|message| message["role"] == "tool")
         .unwrap();
     assert_eq!(tool["tool_call_id"], "call_1");
-    assert!(tool["content"].as_str().unwrap().starts_with("ERROR: "));
+    assert_eq!(tool["content"], "ERROR: no such file");
     assert_eq!(body["tools"][0]["function"]["name"], "read");
 }
 
@@ -203,4 +203,47 @@ fn every_documented_adapter_name_parses_and_a_made_up_one_does_not() {
         assert!(parse_adapter(name).is_some(), "{name}");
     }
     assert!(parse_adapter("not-a-vendor").is_none());
+}
+
+#[tokio::test]
+async fn an_error_result_that_already_says_error_is_not_prefixed_twice() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        "stop",
+        json!({"role": "assistant", "content": "done"}),
+        json!({"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}),
+    )
+    .await;
+    let turns = vec![
+        Turn::text(Role::User, "hi"),
+        Turn {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "read".to_string(),
+                input: json!({"path": "a.rs"}),
+            }],
+        },
+        Turn {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "ERROR read: a.rs: no such file".to_string(),
+                is_error: true,
+            }],
+        },
+    ];
+
+    provider(&server).complete(request(turns)).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+    let tool = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .unwrap();
+    assert_eq!(tool["content"], "ERROR read: a.rs: no such file");
 }

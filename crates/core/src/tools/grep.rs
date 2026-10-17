@@ -5,6 +5,10 @@ use grep_searcher::{BinaryDetection, SearcherBuilder};
 use super::glob::walker;
 use super::{ToolError, Worktree, io_error};
 
+/// A search stops collecting here, so a pattern that matches everything
+/// in a large repository cannot fill memory.
+pub const MAX_HITS: usize = 2000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hit {
     pub path: String,
@@ -30,6 +34,9 @@ pub fn run(worktree: &Worktree, relative: &str, pattern: &str) -> Result<Vec<Hit
     let start = worktree.root().join(worktree.canonical(relative)?);
     let mut hits = Vec::new();
     for entry in walker(&start).build() {
+        if hits.len() >= MAX_HITS {
+            break;
+        }
         let entry = entry.map_err(|error| ToolError::Io(error.to_string()))?;
         if !entry.file_type().is_some_and(|kind| kind.is_file()) {
             continue;
@@ -53,7 +60,7 @@ pub fn run(worktree: &Worktree, relative: &str, pattern: &str) -> Result<Vec<Hit
                         line_number,
                         line: line.trim_end_matches(['\n', '\r']).to_string(),
                     });
-                    Ok(true)
+                    Ok(hits.len() < MAX_HITS)
                 }),
             )
             .map_err(|error| ToolError::Io(format!("{shown}: {error}")))?;

@@ -432,3 +432,78 @@ fn an_empty_result_and_a_failing_silent_command_are_still_explicit() {
         "exit 1\n(no output)"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_planted_at_the_next_handle_is_refused_and_the_target_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("config");
+    std::fs::write(&target, "original").unwrap();
+    std::os::unix::fs::symlink(&target, dir.path().join("r1.txt")).unwrap();
+    let store = RawStore::new(dir.path());
+
+    let error = store.tee("attacker controlled output").unwrap_err();
+
+    assert!(matches!(error, CompactError::Store(_)), "{error:?}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+}
+
+#[test]
+fn a_file_planted_under_a_handle_that_was_never_issued_cannot_be_expanded() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = RawStore::new(dir.path());
+    std::fs::write(dir.path().join("r7.txt"), "planted").unwrap();
+    assert!(matches!(
+        store.slice("r7", 0, 10),
+        Err(CompactError::UnknownHandle(_))
+    ));
+
+    let issued = store.tee("real").unwrap();
+    assert_eq!(issued, "r1");
+    assert_eq!(store.slice("r1", 0, 10).unwrap(), "real");
+    assert!(matches!(
+        store.slice("r2", 0, 10),
+        Err(CompactError::UnknownHandle(_))
+    ));
+    assert!(matches!(
+        store.slice("r0", 0, 10),
+        Err(CompactError::UnknownHandle(_))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_store_directory_is_private_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path().join("raw"));
+    store.tee("x").unwrap();
+    let mode = std::fs::metadata(parent.path().join("raw"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
+}
+
+#[test]
+fn a_pattern_that_matches_everywhere_stops_collecting_and_says_there_is_more() {
+    use jensen_harness_core::tools::{Worktree, grep};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("big.txt"),
+        "needle\n".repeat(grep::MAX_HITS + 500),
+    )
+    .unwrap();
+    let worktree = Worktree::open(dir.path()).unwrap();
+
+    let hits = grep::run(&worktree, ".", "needle").unwrap();
+
+    assert_eq!(hits.len(), grep::MAX_HITS);
+    let out = render::grep(&hits);
+    assert!(
+        out.text.contains("2000+ matches shown") || out.text.contains("of 2000+"),
+        "{}",
+        out.text
+    );
+}

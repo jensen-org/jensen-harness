@@ -262,6 +262,8 @@ async fn refusal_and_max_tokens_map_to_their_own_stop_reasons() {
     for (wire, expected) in [
         ("max_tokens", StopReason::MaxTokens),
         ("stop_sequence", StopReason::StopSequence),
+        ("refusal", StopReason::Refusal),
+        ("pause_turn", StopReason::PauseTurn),
     ] {
         let server = MockServer::start().await;
         mount(

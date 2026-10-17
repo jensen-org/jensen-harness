@@ -54,8 +54,8 @@ pub async fn run_with_timeout(
     // a small, host-derived allowlist is passed back in; none of it is a
     // secret, and a host that does not define one of these at all gets a
     // reasonable, well known default rather than an empty value.
-    let mut child = tokio::process::Command::new(&confined.program);
-    child
+    let mut command = tokio::process::Command::new(&confined.program);
+    command
         .args(&confined.args)
         .current_dir(&policy.worktree)
         .env_clear()
@@ -72,8 +72,19 @@ pub async fn run_with_timeout(
             std::env::var("LANG").unwrap_or_else(|_unset| "C".to_string()),
         )
         .env("TMPDIR", &policy.scratch)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let output = match tokio::time::timeout(timeout, child.output()).await {
+    #[cfg(unix)]
+    command.process_group(0);
+    let running = command
+        .spawn()
+        .map_err(|error| ToolError::Io(error.to_string()))?;
+    let group = running.id();
+    let waited = tokio::time::timeout(timeout, running.wait_with_output()).await;
+    kill_group(group);
+    let output = match waited {
         Ok(finished) => finished.map_err(|error| ToolError::Io(error.to_string()))?,
         Err(_elapsed) => {
             return Ok(ShellResult {
@@ -89,3 +100,23 @@ pub async fn run_with_timeout(
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
 }
+
+/// Kills everything the command started, so a background process cannot
+/// outlive the call and keep touching the worktree. A process that moves
+/// itself into a new session with `setsid` leaves the group and escapes.
+#[cfg(unix)]
+fn kill_group(pid: Option<u32>) {
+    use nix::errno::Errno;
+    use nix::sys::signal::{Signal, killpg};
+    use nix::unistd::Pid;
+    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+        return;
+    };
+    match killpg(Pid::from_raw(pid), Signal::SIGKILL) {
+        Ok(()) | Err(Errno::ESRCH) => {}
+        Err(error) => tracing::warn!(%error, "the command's process group could not be killed"),
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_pid: Option<u32>) {}

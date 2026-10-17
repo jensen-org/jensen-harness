@@ -9,7 +9,7 @@ use super::shell;
 use super::store::RawStore;
 use super::{CompactError, Compacted};
 use crate::tools::edit::EditOutcome;
-use crate::tools::grep::Hit;
+use crate::tools::grep::{self, Hit};
 
 const WHOLE_FILE_MAX_LINES: usize = 200;
 const WHOLE_FILE_MAX_BYTES: usize = 12_000;
@@ -160,8 +160,13 @@ pub fn grep(hits: &[Hit]) -> Compacted {
     }
     let left_out = hits.len().saturating_sub(shown);
     if left_out > 0 {
+        let at_least = if hits.len() >= grep::MAX_HITS {
+            "+"
+        } else {
+            ""
+        };
         out.push(format!(
-            "[{shown} of {} matches shown across {} files; narrow the pattern or the path]",
+            "[{shown} of {}{at_least} matches shown across {} files; narrow the pattern or the path]",
             hits.len(),
             by_file.len()
         ));

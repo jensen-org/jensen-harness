@@ -48,3 +48,6 @@ zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypt
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store = "1"
+
+[target."cfg(unix)".dependencies]
+nix = { version = "0.29", features = ["signal", "process"] }

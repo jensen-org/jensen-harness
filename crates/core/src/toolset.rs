@@ -142,7 +142,9 @@ impl ToolSet {
     pub fn for_worktree(root: &Path) -> Result<Self, ToolError> {
         let worktree = Worktree::open(root)?;
         let policy = SandboxPolicy::confined_to(worktree.root());
-        let store = RawStore::new(policy.scratch.join("raw"));
+        let store = RawStore::new(
+            std::env::temp_dir().join(format!("jensen-harness-raw-{}", uuid::Uuid::new_v4())),
+        );
         Ok(Self::new(
             worktree,
             sandbox::platform_default(),

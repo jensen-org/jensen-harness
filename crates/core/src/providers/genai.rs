@@ -113,7 +113,7 @@ fn messages_to_genai(turns: &[Turn]) -> Vec<ChatMessage> {
                             is_error,
                         } => Some(ToolResponse::new(
                             tool_use_id.as_str(),
-                            if *is_error {
+                            if *is_error && !content.starts_with("ERROR") {
                                 format!("ERROR: {content}")
                             } else {
                                 content.clone()
@@ -177,6 +177,8 @@ fn stop_reason_from_genai(reason: Option<&GenaiStop>) -> Result<StopReason, Prov
         Some(GenaiStop::ToolCall(_)) => Ok(StopReason::ToolUse),
         Some(GenaiStop::ContentFilter(_)) => Ok(StopReason::Refusal),
         Some(GenaiStop::StopSequence(_)) => Ok(StopReason::StopSequence),
+        Some(GenaiStop::Other(other)) if other == "refusal" => Ok(StopReason::Refusal),
+        Some(GenaiStop::Other(other)) if other == "pause_turn" => Ok(StopReason::PauseTurn),
         Some(GenaiStop::Other(other)) => Err(ProviderError::Malformed(format!(
             "unknown stop reason {other:?}"
         ))),
