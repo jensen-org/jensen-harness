@@ -1,5 +1,9 @@
 use std::collections::BTreeMap;
-use std::path::{Component, Path, PathBuf};
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
+
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
 
 use async_trait::async_trait;
 use jensen_harness_core::providers::ToolSpec;
@@ -20,6 +24,12 @@ pub enum SkillError {
     Invalid { path: String, reason: String },
     #[error("skill `{0}` is not in any skills directory")]
     Unknown(String),
+    #[error("skill `{name}` is in two skills directories: {first} and {second}")]
+    Shadowed {
+        name: String,
+        first: String,
+        second: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,23 +145,47 @@ fn parse(file: &Path, directory: &str, text: &str) -> Result<Skill, SkillError> 
 
 impl SkillCatalog {
     pub fn discover(roots: &[PathBuf]) -> Result<Self, SkillError> {
-        let mut skills = BTreeMap::new();
+        let mut skills: BTreeMap<String, Skill> = BTreeMap::new();
         for root in roots {
             let Ok(entries) = std::fs::read_dir(root) else {
+                continue;
+            };
+            let Ok(confined_root) = Dir::open_ambient_dir(root, ambient_authority()) else {
                 continue;
             };
             let mut found: Vec<_> = entries.filter_map(Result::ok).collect();
             found.sort_by_key(std::fs::DirEntry::file_name);
             for entry in found {
+                let directory = entry.file_name().to_string_lossy().into_owned();
                 let file = entry.path().join("SKILL.md");
-                if !file.is_file() {
+                let Ok(meta) = confined_root.symlink_metadata(&directory) else {
+                    continue;
+                };
+                if !meta.is_dir() {
                     continue;
                 }
-                let directory = entry.file_name().to_string_lossy().into_owned();
-                let text = std::fs::read_to_string(&file)
+                let dir = confined_root
+                    .open_dir(&directory)
                     .map_err(|error| invalid(&file, error.to_string()))?;
+                match dir.symlink_metadata("SKILL.md") {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(invalid(&file, error.to_string())),
+                    Ok(meta) if !meta.is_file() => {
+                        return Err(invalid(&file, "SKILL.md is not a regular file"));
+                    }
+                    Ok(_) => {}
+                }
+                let text = read_capped(&dir, "SKILL.md", MAX_FILE_BYTES)
+                    .map_err(|reason| invalid(&file, reason))?;
                 let skill = parse(&file, &directory, &text)?;
-                skills.entry(skill.name.clone()).or_insert(skill);
+                if let Some(first) = skills.get(&skill.name) {
+                    return Err(SkillError::Shadowed {
+                        name: skill.name,
+                        first: first.dir.display().to_string(),
+                        second: skill.dir.display().to_string(),
+                    });
+                }
+                skills.insert(skill.name.clone(), skill);
             }
         }
         Ok(Self { skills })
@@ -197,25 +231,28 @@ impl SkillProvider {
     }
 }
 
-fn confined(skill_dir: &Path, relative: &str) -> Result<PathBuf, String> {
-    let path = Path::new(relative);
-    let plain = path
-        .components()
-        .all(|component| matches!(component, Component::Normal(_)));
-    if relative.is_empty() || !plain {
-        return Err("a skill file is a relative path inside the skill".to_owned());
-    }
-    let root = skill_dir
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    let full = root
-        .join(path)
-        .canonicalize()
+fn read_capped(dir: &Dir, relative: &str, limit: u64) -> Result<String, String> {
+    let before = dir
+        .symlink_metadata(relative)
         .map_err(|error| format!("{relative}: {error}"))?;
-    if !full.starts_with(&root) {
-        return Err(format!("{relative} is outside the skill"));
+    if !before.is_file() {
+        return Err(format!("{relative} is not a regular file"));
     }
-    Ok(full)
+    let file = dir
+        .open(relative)
+        .map_err(|error| format!("{relative}: {error}"))?;
+    let meta = file.metadata().map_err(|error| error.to_string())?;
+    if !meta.is_file() {
+        return Err(format!("{relative} is not a regular file"));
+    }
+    let mut text = String::new();
+    file.take(limit + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("{relative}: {error}"))?;
+    if u64::try_from(text.len()).unwrap_or(u64::MAX) > limit {
+        return Err(format!("{relative} is over {limit} bytes"));
+    }
+    Ok(text)
 }
 
 #[async_trait]
@@ -266,20 +303,13 @@ impl ToolProvider for SkillProvider {
         let Some(file) = input.get("file").and_then(Value::as_str) else {
             return reply(skill.body.clone(), false);
         };
-        let path = match confined(&skill.dir, file) {
-            Ok(path) => path,
-            Err(message) => return reply(format!("ERROR skill: {message}"), true),
+        let dir = match Dir::open_ambient_dir(&skill.dir, ambient_authority()) {
+            Ok(dir) => dir,
+            Err(error) => return reply(format!("ERROR skill: {error}"), true),
         };
-        let too_big = std::fs::metadata(&path).is_ok_and(|meta| meta.len() > MAX_FILE_BYTES);
-        if too_big {
-            return reply(
-                format!("ERROR skill: {file} is over {MAX_FILE_BYTES} bytes"),
-                true,
-            );
-        }
-        match std::fs::read_to_string(&path) {
+        match read_capped(&dir, file, MAX_FILE_BYTES) {
             Ok(text) => reply(text, false),
-            Err(error) => reply(format!("ERROR skill: {file}: {error}"), true),
+            Err(message) => reply(format!("ERROR skill: {message}"), true),
         }
     }
 }

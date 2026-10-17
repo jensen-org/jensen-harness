@@ -68,9 +68,12 @@ impl Host for EngineHost {
 }
 
 fn skill_roots(engine: &Engine, worktree: &Path) -> Vec<PathBuf> {
-    let mut roots = vec![worktree.join("skills")];
+    let mut roots: Vec<PathBuf> = Vec::new();
     roots.extend(dirs::config_dir().map(|base| base.join("jensen-harness").join("skills")));
     roots.extend(engine.library.iter().map(|dir| dir.join("skills")));
+    if engine.allow_project_skills {
+        roots.push(worktree.join("skills"));
+    }
     roots
 }
 

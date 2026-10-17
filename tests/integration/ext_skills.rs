@@ -108,7 +108,7 @@ fn a_skill_that_breaks_the_specification_is_refused_naming_the_file() {
 }
 
 #[test]
-fn an_earlier_root_shadows_a_later_one_and_unknown_names_are_refused() {
+fn a_name_in_two_roots_is_an_error_and_unknown_names_are_refused() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
     skill(
@@ -129,14 +129,57 @@ fn an_earlier_root_shadows_a_later_one_and_unknown_names_are_refused() {
         "name: extra\ndescription: only here",
         "x",
     );
-    let found =
-        SkillCatalog::discover(&[first.path().to_path_buf(), second.path().to_path_buf()]).unwrap();
-    assert_eq!(found.get("same").unwrap().description, "from the first");
-    assert!(found.get("extra").is_some());
+    let roots = [first.path().to_path_buf(), second.path().to_path_buf()];
+    assert!(matches!(
+        SkillCatalog::discover(&roots),
+        Err(SkillError::Shadowed { name, .. }) if name == "same"
+    ));
+    let found = SkillCatalog::discover(&roots[1..]).unwrap();
     assert!(matches!(
         found.select(&["nope".to_owned()]),
         Err(SkillError::Unknown(name)) if name == "nope"
     ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_skill_that_is_a_symlink_or_holds_one_out_of_its_root_is_refused() {
+    let outside = tempfile::tempdir().unwrap();
+    skill(
+        outside.path(),
+        "evil",
+        "name: evil\ndescription: lives elsewhere",
+        "x",
+    );
+    let root = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path().join("evil"), root.path().join("evil")).unwrap();
+    assert!(
+        SkillCatalog::discover(&[root.path().to_path_buf()]).is_err()
+            || SkillCatalog::discover(&[root.path().to_path_buf()])
+                .unwrap()
+                .get("evil")
+                .is_none()
+    );
+
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("linked");
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = outside.path().join("SKILL.md");
+    std::fs::write(&target, "---\nname: linked\ndescription: d\n---\nbody").unwrap();
+    std::os::unix::fs::symlink(&target, dir.join("SKILL.md")).unwrap();
+    assert!(refused(root.path()).contains("not a regular file"));
+}
+
+#[test]
+fn an_oversize_skill_or_bundled_file_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    skill(
+        dir.path(),
+        "big",
+        "name: big\ndescription: d",
+        &"x".repeat(300 * 1024),
+    );
+    assert!(refused(dir.path()).contains("over"));
 }
 
 async fn call(provider: &SkillProvider, input: serde_json::Value) -> (String, bool) {

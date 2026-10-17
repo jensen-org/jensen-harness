@@ -171,6 +171,7 @@ fn build_engine(
         .with_context(|| format!("the state database {} could not be opened", path.display()))?;
     let budget = registry.budget_settings().clone();
     let library = registry.library_paths().to_vec();
+    let project_skills = registry.allow_project_skills();
     let models = ConfiguredModels {
         default_model: model.or_else(|| registry.default_model().map(str::to_string)),
         registry,
@@ -200,6 +201,7 @@ fn build_engine(
     Ok(Engine::new(Box::new(models), store, budget)
         .with_checkpoints(Arc::new(checkpoints))
         .with_library(library)
+        .with_project_skills(project_skills)
         .with_workspaces(PathBuf::from(workspaces)))
 }
 

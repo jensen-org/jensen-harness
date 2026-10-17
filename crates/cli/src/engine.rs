@@ -125,6 +125,7 @@ pub struct Engine {
     pub checkpoints: Arc<dyn RunStore>,
     pub workspaces: std::path::PathBuf,
     pub library: Vec<std::path::PathBuf>,
+    pub allow_project_skills: bool,
     pub active_workflows: Mutex<HashMap<String, CancellationToken>>,
 }
 
@@ -143,7 +144,14 @@ impl Engine {
             )),
             active_workflows: Mutex::new(HashMap::new()),
             library: Vec::new(),
+            allow_project_skills: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_project_skills(mut self, allow: bool) -> Self {
+        self.allow_project_skills = allow;
+        self
     }
 
     #[must_use]

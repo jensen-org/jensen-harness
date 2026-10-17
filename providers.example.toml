@@ -39,6 +39,12 @@ api_key_keychain = {}
 base_url = "https://gitlab.example.com"
 api_key_env = "GITLAB_TOKEN"
 
+# Skills (Agent Skills format) are read from ~/.config/jensen-harness/skills and
+# each library path's skills directory. A repository's own skills directory is
+# only loaded when you allow it, because a project can ship its own prompts.
+[skills]
+allow_project = false
+
 # Prices are integer micro dollars per million tokens. These are examples only:
 # copy the current numbers from your provider's price list and bump the version.
 [pricing]

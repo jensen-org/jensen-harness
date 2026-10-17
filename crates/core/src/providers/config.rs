@@ -64,6 +64,13 @@ struct LibraryFile {
     paths: Vec<std::path::PathBuf>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillsFile {
+    #[serde(default)]
+    allow_project: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
@@ -76,6 +83,8 @@ struct ConfigFile {
     #[serde(default)]
     library: LibraryFile,
     #[serde(default)]
+    skills: SkillsFile,
+    #[serde(default)]
     pricing: PricingTable,
     budget: Option<BudgetFile>,
 }
@@ -87,6 +96,7 @@ pub struct ProviderRegistry {
     roles: BTreeMap<String, String>,
     forges: BTreeMap<String, ForgeEntry>,
     library: Vec<std::path::PathBuf>,
+    allow_project_skills: bool,
     budget: BudgetSettings,
 }
 
@@ -190,6 +200,7 @@ impl ProviderRegistry {
             roles: file.roles,
             forges: file.forges,
             library: file.library.paths,
+            allow_project_skills: file.skills.allow_project,
             budget,
         })
     }
@@ -255,6 +266,11 @@ impl ProviderRegistry {
                 .clone()
                 .unwrap_or_else(|| provider_id.to_string()),
         ))
+    }
+
+    #[must_use]
+    pub fn allow_project_skills(&self) -> bool {
+        self.allow_project_skills
     }
 
     #[must_use]
