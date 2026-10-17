@@ -12,6 +12,7 @@ mod protocol_frame;
 
 mod core_agent;
 mod core_compact;
+mod core_ledger;
 mod core_pricing;
 mod core_providers_anthropic;
 mod core_providers_config;

@@ -43,7 +43,7 @@ async fn open_session(engine: &Arc<Engine>, worktree: &std::path::Path) -> Strin
 #[tokio::test]
 async fn a_new_session_then_a_prompt_round_trips_with_usage_and_savings() {
     let dir = tempfile::tempdir().unwrap();
-    let engine = Arc::new(Engine::with_fixed_model(Arc::new(Echo), "echo-model"));
+    let engine = Arc::new(Engine::with_fixed_model(Arc::new(Echo), "echo-model").unwrap());
     let session_id = open_session(&engine, dir.path()).await;
 
     let response = call(&engine, prompt(2, &session_id, "hello")).await;
@@ -63,7 +63,7 @@ async fn a_run_that_uses_tools_reports_what_it_saved_and_changes_the_worktree() 
         calls_tool("t", "read", path_input("a.txt")),
         says("done"),
     ]));
-    let engine = Arc::new(Engine::with_fixed_model(provider, "m"));
+    let engine = Arc::new(Engine::with_fixed_model(provider, "m").unwrap());
     let session_id = open_session(&engine, dir.path()).await;
 
     let response = call(&engine, prompt(2, &session_id, "look")).await;
@@ -87,7 +87,7 @@ async fn a_capped_run_reports_turn_limit() {
         "read",
         path_input("a.txt"),
     )));
-    let engine = Arc::new(Engine::with_fixed_model(provider, "m"));
+    let engine = Arc::new(Engine::with_fixed_model(provider, "m").unwrap());
     let request = json!({"jsonrpc": "2.0", "id": 1, "method": "session.new",
         "params": {"worktree": dir.path().to_str().unwrap(), "max_turns": 2}});
     let response = call(&engine, request).await;
@@ -105,7 +105,7 @@ async fn a_capped_run_reports_turn_limit() {
 #[tokio::test]
 async fn bad_session_params_are_invalid_params_not_a_dropped_connection() {
     let dir = tempfile::tempdir().unwrap();
-    let engine = Arc::new(Engine::with_fixed_model(Arc::new(Echo), "m"));
+    let engine = Arc::new(Engine::with_fixed_model(Arc::new(Echo), "m").unwrap());
     let missing = dir.path().join("does-not-exist");
     let a_file = dir.path().join("file.txt");
     std::fs::write(&a_file, "x").unwrap();
@@ -142,7 +142,7 @@ async fn a_provider_failure_is_an_internal_error_and_the_session_survives() {
         }),
         Ok(says("recovered")),
     ]));
-    let engine = Arc::new(Engine::with_fixed_model(provider, "m"));
+    let engine = Arc::new(Engine::with_fixed_model(provider, "m").unwrap());
     let session_id = open_session(&engine, dir.path()).await;
 
     let failed = call(&engine, prompt(2, &session_id, "one")).await;
@@ -154,7 +154,7 @@ async fn a_provider_failure_is_an_internal_error_and_the_session_survives() {
 
 #[tokio::test]
 async fn an_unknown_method_is_reported_as_a_jsonrpc_error_not_a_dropped_connection() {
-    let engine = Arc::new(Engine::with_fixed_model(Arc::new(Echo), "echo-model"));
+    let engine = Arc::new(Engine::with_fixed_model(Arc::new(Echo), "echo-model").unwrap());
     let response = call(
         &engine,
         json!({"jsonrpc": "2.0", "id": 1, "method": "nope", "params": {}}),
@@ -189,10 +189,8 @@ async fn a_long_run_on_one_session_does_not_block_another_session_or_a_new_one()
     let gated = Arc::new(Gated {
         release: tokio::sync::Notify::new(),
     });
-    let engine = Arc::new(Engine::with_fixed_model(
-        Arc::clone(&gated) as Arc<dyn Provider>,
-        "m",
-    ));
+    let engine =
+        Arc::new(Engine::with_fixed_model(Arc::clone(&gated) as Arc<dyn Provider>, "m").unwrap());
     let busy = open_session(&engine, dir.path()).await;
 
     let (client, server) = tokio::io::duplex(8192);

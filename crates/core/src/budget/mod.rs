@@ -1,6 +1,7 @@
 //! What a session may spend. Prices and caps are config; every amount is an
 //! integer, in tokens or in micro dollars, so nothing rounds silently.
 
+pub mod estimate;
 pub mod pricing;
 
 use serde::{Deserialize, Serialize};
@@ -76,7 +77,7 @@ pub struct BudgetSettings {
 
 /// The caps one session runs under, once the request, the config and the
 /// built in default have been combined.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionBudget {
     pub caps: Caps,
     pub soft_percent: u8,

@@ -6,15 +6,18 @@ pub mod config;
 pub mod genai;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     User,
     Assistant,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text(String),
     ToolUse {
@@ -33,7 +36,7 @@ pub enum ContentBlock {
     Opaque(Value),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Turn {
     pub role: Role,
     pub content: Vec<ContentBlock>,
@@ -76,7 +79,8 @@ pub struct CompletionRequest {
     pub tools: Vec<ToolSpec>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,
     ToolUse,
@@ -88,7 +92,7 @@ pub enum StopReason {
 
 /// Token counts in separate buckets: `input_tokens` excludes the cache
 /// buckets, so the four fields add up to the whole bill.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,

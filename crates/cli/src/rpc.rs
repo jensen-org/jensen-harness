@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use jensen_harness_core::agent::{
-    AgentError, DEFAULT_MAX_TURNS, PromptOutcome, PromptStop, Session,
+    AgentError, DEFAULT_MAX_TURNS, PromptOutcome, PromptStop, Session, SessionConfig,
 };
 use jensen_harness_core::toolset::ToolSet;
 use jensen_harness_protocol::{
@@ -96,8 +96,12 @@ async fn session_new(engine: &Engine, id: RequestId, params: Option<Value>) -> R
     if params.max_turns == Some(0) {
         return invalid_params(id, "max_turns must be at least 1");
     }
-    let (provider, model) = match engine.models.resolve(params.model.as_deref()) {
-        Ok(chosen) => chosen,
+    let resolved = match engine.models.resolve(params.model.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(error) => return invalid_params(id, error.to_string()),
+    };
+    let budget = match engine.budget.resolve(None, &resolved.address) {
+        Ok(budget) => budget,
         Err(error) => return invalid_params(id, error.to_string()),
     };
     let tools = match ToolSet::for_worktree(std::path::Path::new(&params.worktree)) {
@@ -106,11 +110,25 @@ async fn session_new(engine: &Engine, id: RequestId, params: Option<Value>) -> R
             return invalid_params(id, format!("worktree {}: {error}", params.worktree));
         }
     };
-    let session = Session::new(model, tools, params.max_turns.unwrap_or(DEFAULT_MAX_TURNS));
     let session_id = uuid::Uuid::new_v4().to_string();
+    let config = SessionConfig {
+        session_id: session_id.clone(),
+        run_id: None,
+        model_address: resolved.address,
+        max_turns: params.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
+        budget,
+        price_version: engine.budget.pricing.version().to_string(),
+    };
+    let session = match Session::create(engine.store.clone(), config, tools).await {
+        Ok(session) => session,
+        Err(error) => return Response::err(id, ResponseError::internal(error.to_string())),
+    };
     engine.sessions.lock().await.insert(
         session_id.clone(),
-        Arc::new(tokio::sync::Mutex::new(LiveSession { provider, session })),
+        Arc::new(tokio::sync::Mutex::new(LiveSession {
+            provider: resolved.provider,
+            session,
+        })),
     );
     Response::ok(id, json!(SessionNewResult { session_id }))
 }
@@ -122,6 +140,7 @@ fn stop_reason(stop: PromptStop) -> StopReason {
         PromptStop::MaxTokens => StopReason::MaxTokens,
         PromptStop::Refusal => StopReason::Refusal,
         PromptStop::TurnLimit => StopReason::TurnLimit,
+        PromptStop::BudgetExhausted => StopReason::BudgetExhausted,
     }
 }
 
@@ -131,6 +150,7 @@ fn prompt_result(
     Ok(SessionPromptResult {
         stop_reason: stop_reason(outcome.stop),
         model_calls: outcome.model_calls,
+        cost_micro_usd: outcome.cost_micro_usd,
         usage: Usage {
             input_tokens: outcome.usage.input_tokens,
             output_tokens: outcome.usage.output_tokens,
@@ -170,6 +190,9 @@ async fn session_prompt(engine: &Engine, id: RequestId, params: Option<Value>) -
         }
         Err(error @ AgentError::Tool(_)) => {
             Response::err(id, ResponseError::internal(format!("tool: {error}")))
+        }
+        Err(error @ (AgentError::Store(_) | AgentError::Budget(_))) => {
+            Response::err(id, ResponseError::internal(format!("state: {error}")))
         }
     }
 }

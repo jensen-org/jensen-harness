@@ -203,6 +203,7 @@ pub enum StopReason {
     StopSequence,
     Refusal,
     TurnLimit,
+    BudgetExhausted,
     Error,
 }
 
@@ -229,6 +230,7 @@ pub struct Savings {
 pub struct SessionPromptResult {
     pub stop_reason: StopReason,
     pub model_calls: u32,
+    pub cost_micro_usd: u64,
     pub usage: Usage,
     pub savings: Savings,
 }

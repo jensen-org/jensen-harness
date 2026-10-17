@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use jensen_harness_core::agent::{Session, SessionConfig};
+use jensen_harness_core::budget::{BudgetSettings, SessionBudget};
 use jensen_harness_core::compact::store::RawStore;
 use jensen_harness_core::providers::{
     CompletionRequest, CompletionResponse, ContentBlock, Provider, ProviderError, StopReason, Usage,
@@ -13,6 +15,7 @@ use jensen_harness_core::providers::{
 use jensen_harness_core::sandbox::{
     Confined, EnforcementReport, Sandbox, SandboxError, SandboxPolicy,
 };
+use jensen_harness_core::store::Store;
 use jensen_harness_core::tools::Worktree;
 use jensen_harness_core::toolset::ToolSet;
 use serde_json::{Value, json};
@@ -223,4 +226,44 @@ pub fn binary_path() -> PathBuf {
         "the jensen-harness binary was not found under {}",
         target.display()
     );
+}
+
+pub fn default_budget() -> SessionBudget {
+    BudgetSettings::default()
+        .resolve(None, "scripted/m")
+        .unwrap()
+}
+
+pub fn session_config(max_turns: u32, budget: SessionBudget) -> SessionConfig {
+    SessionConfig {
+        session_id: format!("s-{}", uuid::Uuid::new_v4()),
+        run_id: None,
+        model_address: "scripted/m".to_string(),
+        max_turns,
+        budget,
+        price_version: "test".to_string(),
+    }
+}
+
+pub async fn session_over(store: Store, tools: ToolSet, config: SessionConfig) -> Session {
+    Session::create(store, config, tools).await.unwrap()
+}
+
+/// A session over `root` with an in memory store and the built in budget.
+pub async fn new_session(root: &Path, max_turns: u32) -> Session {
+    session_over(
+        Store::in_memory().unwrap(),
+        tool_set(root),
+        session_config(max_turns, default_budget()),
+    )
+    .await
+}
+
+/// A reply that reports exactly `tokens` input tokens and nothing else.
+pub fn costing(tokens: u64, mut response: CompletionResponse) -> CompletionResponse {
+    response.usage = Usage {
+        input_tokens: tokens,
+        ..Usage::default()
+    };
+    response
 }

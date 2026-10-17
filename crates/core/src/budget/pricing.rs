@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::BudgetError;
 use crate::providers::Usage;
@@ -8,7 +8,7 @@ use crate::providers::Usage;
 const TOKENS_PER_MILLION: u128 = 1_000_000;
 
 /// Micro dollars per million tokens, per bucket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Price {
     pub input: u64,
