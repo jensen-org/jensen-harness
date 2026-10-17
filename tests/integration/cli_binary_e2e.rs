@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn completion(finish_reason: &str, message: Value) -> ResponseTemplate {
+pub fn completion(finish_reason: &str, message: Value) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({
         "id": "x",
         "object": "chat.completion",
@@ -20,7 +20,7 @@ fn completion(finish_reason: &str, message: Value) -> ResponseTemplate {
     }))
 }
 
-fn write_config(dir: &std::path::Path, base_url: &str) -> std::path::PathBuf {
+pub fn write_config(dir: &std::path::Path, base_url: &str) -> std::path::PathBuf {
     let config = dir.join("providers.toml");
     std::fs::write(
         &config,
