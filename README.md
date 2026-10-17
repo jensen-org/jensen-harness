@@ -49,8 +49,41 @@ Newline delimited JSON-RPC 2.0, identical on stdio and the Unix socket (owner on
 - `session.resume {session_id}` continues a prompt that was cut short by a provider error or a restart,
   and returns what `session.prompt` would have.
 
+- `workflow.start {worktree, workflow, inputs?, budget?}` runs the workflow file (a path under the
+  worktree) until it ends and returns `{run_id, status, channels, outcomes, failure?, super_steps}`.
+  `status` is `running`, `succeeded`, `failed`, `cancelled`, `budget_exceeded` or `deadline_exceeded`.
+- `workflow.status {run_id}`, `workflow.resume {run_id}` and `workflow.cancel {run_id}`. Resume rebuilds
+  the graph from the spec journaled with the run and continues from its last committed wave. Cancel is
+  sent on another connection than the one waiting for the run.
+
 Unknown parameters are rejected, so a typo never silently drops a cap. Each session has its own lock, so
 a long run never blocks another session.
+
+## Workflows
+
+A workflow is a YAML file (`workflows/examples/triage.yaml`): typed channels, nodes, and edges.
+
+- Channels hold JSON validated by a JSON Schema, folded by a reducer (`overwrite`, `append`, `set_union`,
+  `merge_map`, `max`). A node may read a channel only if every writer of it is its ancestor, so the shared
+  state never depends on which branch finished first.
+- Node kinds: `agent` (a model session that replies with one JSON object holding the channels it
+  writes), `command` (a sandboxed shell command), `verifier` (a command plus a CEL check; only a
+  verifier writes a `verified` channel), `router` (a CEL expression picks a label, edges with a `when`
+  guard follow it) and `loop` (a body, a CEL `until` and a required `max_iterations`; it ends `ok`,
+  `stalled` when an iteration repeats the last one, or `exhausted`).
+- Every agent needs `max_turns` or a budget and every loop a bound, or the file does not load. Parallel
+  branches may not hold a writer agent, and two parallel nodes may not write one `overwrite` channel.
+- Validation runs on a petgraph graph, execution on dagrs, expressions in CEL.
+- A role maps to a model in `providers.toml` under `[roles]`, for example `explore = "provider/model"`.
+
+`jensen-harness workflow validate <file>` checks a file and `jensen-harness workflow dot <file>` prints
+its graph.
+
+Each agent node runs its own session, opened under a node budget scope that rolls up into the run. After
+`kill -9`, `workflow.resume` restores finished waves from the checkpoint, resumes an agent node from its
+own journal, and reports a command that had started but not finished as `interrupted` unless it is
+marked `idempotent`. A node result is also recorded by a hash of the node and its inputs, so a node that
+finished inside a wave that did not commit is not run again. Cancelling a run releases its reservations.
 
 ## Budget
 
