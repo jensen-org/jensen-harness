@@ -33,6 +33,10 @@ pub enum RunError {
     Skill { node: String, source: SkillError },
     #[error("node `{node}`: {source}")]
     Mcp { node: String, source: McpError },
+    #[error(
+        "agent `{agent}` attaches a writable server and runs in parallel with `{other}`; writes stay single threaded"
+    )]
+    ParallelServerWriter { agent: String, other: String },
     #[error("node `{node}` could not gather its context: {message}")]
     Context { node: String, message: String },
     #[error("this workflow has writer or promote nodes and needs a git repository to isolate them")]

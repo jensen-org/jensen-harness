@@ -26,6 +26,7 @@ fn stdio(env: Vec<(String, String)>) -> McpServerSpec {
         },
         network: NetworkPolicy::None,
         writable: true,
+        mutating: true,
         tools: Vec::new(),
         timeout: Duration::from_secs(20),
     }
@@ -138,10 +139,10 @@ async fn the_operator_and_the_node_allowlists_both_narrow_the_tools() {
 }
 
 #[tokio::test]
-async fn read_only_access_hides_every_tool_that_may_change_things() {
+async fn without_mutating_access_every_tool_that_may_change_things_is_hidden() {
     let dir = tempfile::tempdir().unwrap();
     let mut spec = stdio(Vec::new());
-    spec.writable = false;
+    spec.mutating = false;
     let provider = connect(&spec, &[], &tool_set(dir.path())).await.unwrap();
     let names: Vec<String> = provider.specs().iter().map(|s| s.name.clone()).collect();
     assert_eq!(
@@ -292,6 +293,7 @@ async fn the_http_token_travels_as_a_header_and_never_into_errors_or_debug_outpu
         },
         network: NetworkPolicy::Full,
         writable: false,
+        mutating: false,
         tools: Vec::new(),
         timeout: Duration::from_secs(5),
     };
@@ -369,6 +371,7 @@ timeout_secs = 90
 url = "https://mcp.example.invalid/mcp"
 network = "full"
 access = "read_write"
+mutating = true
 api_key_env = "FIGMA_TOKEN"
 "#;
 
@@ -424,7 +427,7 @@ api_key_env = "FIGMA_TOKEN"
             McpTransportSpec::Http { token: Some(_), .. }
         ));
         assert_eq!(remote.network, NetworkPolicy::Full);
-        assert!(remote.writable);
+        assert!(remote.writable && remote.mutating);
         assert!(!format!("{remote:?}").contains("figma-secret-77"));
     }
 
@@ -476,5 +479,69 @@ api_key_env = "FIGMA_TOKEN"
                 "{why}"
             );
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_read_only_node_caps_a_writable_server_to_its_scratch() {
+    use jensen_harness_core::toolset::{Access, ToolSet};
+    let worktree = tempfile::tempdir().unwrap();
+    let tools = ToolSet::for_worktree_access(worktree.path(), Access::ReadOnly).unwrap();
+    let provider = connect(&stdio(Vec::new()), &[], &tools).await.unwrap();
+    let target = worktree.path().join("inside.txt");
+
+    let reply = provider
+        .invoke(
+            "mcp__fx__write_file",
+            &json!({"path": target.display().to_string()}),
+        )
+        .await
+        .unwrap();
+
+    assert!(reply.is_error, "{}", reply.text);
+    assert!(
+        !target.exists(),
+        "a read only node must not gain write access through a server"
+    );
+}
+
+#[test]
+fn the_shipped_example_config_lets_the_shipped_templates_do_their_work() {
+    use jensen_harness::engine::{ConfiguredModels, ModelSource};
+    use jensen_harness_core::providers::config::ProviderRegistry;
+    use jensen_harness_core::secrets::SystemSecrets;
+    use jensen_harness_workflow::library::Library;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("providers.example.toml")).unwrap();
+    let models = ConfiguredModels {
+        registry: ProviderRegistry::from_toml(&text).unwrap(),
+        secrets: Arc::new(SystemSecrets),
+        default_model: None,
+    };
+    let excalidraw = models.mcp_server("excalidraw").unwrap();
+    assert!(excalidraw.mutating, "the architect must be able to draw");
+    assert!(
+        !excalidraw.writable,
+        "drawing needs no write access to the repository"
+    );
+    let figma = models.mcp_server("figma");
+    assert!(
+        matches!(&figma, Ok(spec) if spec.mutating)
+            || matches!(&figma, Err(McpError::Config { .. })),
+        "the designer must be able to change Figma (a missing token is the only excuse): {figma:?}"
+    );
+
+    let workflow = std::fs::read_to_string(root.join("workflows/examples/design.yaml")).unwrap();
+    let loaded =
+        jensen_harness_workflow::load_with(&workflow, &Library::new(vec![root.join("agents")]))
+            .unwrap();
+    let spec = loaded.spec();
+    for node in ["architect", "designer"] {
+        assert!(matches!(
+            spec.nodes.get(node),
+            Some(jensen_harness_workflow::NodeSpec::Agent(_))
+        ));
     }
 }

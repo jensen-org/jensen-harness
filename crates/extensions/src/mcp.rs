@@ -66,6 +66,7 @@ pub struct McpServerSpec {
     pub transport: McpTransportSpec,
     pub network: NetworkPolicy,
     pub writable: bool,
+    pub mutating: bool,
     pub tools: Vec<String>,
     pub timeout: Duration,
 }
@@ -171,7 +172,7 @@ pub async fn connect(
             .as_ref()
             .and_then(|annotations| annotations.read_only_hint)
             == Some(true);
-        if !allowed || (!spec.writable && !read_only) {
+        if !allowed || (!spec.mutating && !read_only) {
             continue;
         }
         let exposed = exposed_name(server, &original);

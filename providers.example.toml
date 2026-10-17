@@ -45,22 +45,32 @@ api_key_env = "GITLAB_TOKEN"
 [skills]
 allow_project = false
 
+# Where agent templates (and their skills directories) live besides the
+# agents directory next to a workflow. The checkout's own library is a good start.
+# [library]
+# paths = ["/path/to/jensen-harness/agents"]
+
 # MCP servers are declared here, once, by you. A workflow can attach one by
 # name but never defines a command. A stdio server runs inside the OS sandbox
-# of the node that attaches it, with only the listed environment variables,
-# the network closed unless you open it, and its worktree read only unless you
-# say read_write. `tools` limits which of its tools any node can see.
+# of the node that attaches it, with only the listed environment variables and
+# the network closed unless the entry opens it.
+#   access   decides whether the server may write the node's worktree.
+#   mutating decides whether tools that may change things are offered at all;
+#            without it only tools the server marks read only are visible.
+#   tools    limits which of its tools any node can see.
 [mcp.servers.excalidraw]
 command = "excalidraw-mcp"
 args = ["--stdio"]
 env_allow = []
 network = "none"
 access = "read_only"
+mutating = true
 tools = []
 
 [mcp.servers.figma]
 url = "https://mcp.figma.com/mcp"
 network = "full"
+mutating = true
 api_key_keychain = {}
 
 # Language servers answer `lsp` context sources (diagnostics, symbols,

@@ -27,8 +27,13 @@ struct Fixture {
 }
 
 fn log(line: &str) -> Result<(), ErrorData> {
-    let Ok(path) = std::env::var("TESTKIT_LOG") else {
-        return Ok(());
+    let path = match (
+        std::env::var("TESTKIT_LOG"),
+        std::env::var("TESTKIT_LOG_NAME"),
+    ) {
+        (Ok(path), _) => path,
+        (Err(_), Ok(name)) => format!("{}/{name}", std::env::var("TMPDIR").unwrap_or_default()),
+        _ => return Ok(()),
     };
     let mut file = std::fs::OpenOptions::new()
         .create(true)

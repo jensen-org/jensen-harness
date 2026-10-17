@@ -142,6 +142,7 @@ pub trait ToolProvider: Send + Sync {
 pub struct Confiner {
     sandbox: std::sync::Arc<dyn Sandbox>,
     policy: SandboxPolicy,
+    read_only: bool,
 }
 
 impl Confiner {
@@ -150,8 +151,6 @@ impl Confiner {
         &self.policy.worktree
     }
 
-    /// # Errors
-    /// [`ToolSetError::Sandbox`] when the policy cannot be applied.
     pub fn confine(
         &self,
         program: &str,
@@ -159,6 +158,7 @@ impl Confiner {
         network: sandbox::NetworkPolicy,
         writable: bool,
     ) -> Result<(sandbox::Confined, PathBuf), ToolSetError> {
+        let writable = writable && !self.read_only;
         let mut policy = self.policy.clone();
         policy.network = network;
         let worktree = policy.worktree.clone();
@@ -268,11 +268,10 @@ impl ToolSet {
         Confiner {
             sandbox: std::sync::Arc::clone(&self.sandbox),
             policy: self.policy.clone(),
+            read_only: self.read_only,
         }
     }
 
-    /// # Errors
-    /// [`ToolSetError::Sandbox`] when the policy cannot be applied.
     pub fn confine_process(
         &self,
         program: &str,
@@ -283,9 +282,6 @@ impl ToolSet {
         self.confiner().confine(program, args, network, writable)
     }
 
-    /// # Errors
-    /// [`ToolSetError::Infrastructure`] when the provider has a tool whose
-    /// name is already taken by a built in tool or another provider.
     pub fn attach(
         &mut self,
         provider: std::sync::Arc<dyn ToolProvider>,

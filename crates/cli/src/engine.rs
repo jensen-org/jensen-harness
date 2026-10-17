@@ -141,6 +141,7 @@ impl ModelSource for ConfiguredModels {
                 McpNetwork::Full => NetworkPolicy::Full,
             },
             writable: entry.access == McpAccess::ReadWrite,
+            mutating: entry.mutating,
             tools: entry.tools.clone(),
             timeout: entry.timeout_secs.map_or(
                 jensen_harness_extensions::mcp::DEFAULT_TIMEOUT,

@@ -32,6 +32,7 @@ impl McpDirectory for Mcp {
             },
             network: NetworkPolicy::None,
             writable: false,
+            mutating: false,
             tools: Vec::new(),
             timeout: Duration::from_secs(20),
         })

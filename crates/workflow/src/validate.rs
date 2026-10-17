@@ -120,6 +120,7 @@ pub struct Workflow {
     graph: DiGraph<String, ()>,
     waves: Vec<Vec<String>>,
     scopes: BTreeMap<String, String>,
+    owners: BTreeMap<String, String>,
 }
 
 pub fn load(yaml: &str) -> Result<Workflow, SpecError> {
@@ -173,6 +174,7 @@ impl Workflow {
             graph,
             waves,
             scopes,
+            owners,
         })
     }
 
@@ -184,6 +186,24 @@ impl Workflow {
     #[must_use]
     pub fn hash(&self) -> &str {
         &self.hash
+    }
+
+    #[must_use]
+    pub fn unordered(&self, a: &str, b: &str) -> bool {
+        let unit = |id: &str| self.owners.get(id).map_or(id.to_owned(), Clone::clone);
+        let find = |id: &str| {
+            self.graph.node_indices().find(|index| {
+                self.graph
+                    .node_weight(*index)
+                    .is_some_and(|name| *name == unit(id))
+            })
+        };
+        let (Some(first), Some(second)) = (find(a), find(b)) else {
+            return false;
+        };
+        first != second
+            && !has_path_connecting(&self.graph, first, second, None)
+            && !has_path_connecting(&self.graph, second, first, None)
     }
 
     #[must_use]

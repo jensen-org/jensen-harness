@@ -87,6 +87,8 @@ pub struct McpServerEntry {
     #[serde(default)]
     pub access: McpAccess,
     #[serde(default)]
+    pub mutating: bool,
+    #[serde(default)]
     pub tools: Vec<String>,
     pub timeout_secs: Option<u64>,
     pub api_key_env: Option<String>,
@@ -404,8 +406,6 @@ impl ProviderRegistry {
         self.mcp_servers.get(name)
     }
 
-    /// # Errors
-    /// [`ProviderError::MissingApiKey`] when the token is not there.
     pub fn mcp_token(
         &self,
         name: &str,

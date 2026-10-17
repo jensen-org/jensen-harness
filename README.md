@@ -146,8 +146,10 @@ code.
   `skills/` is loaded only with `[skills] allow_project = true`, and a name found twice is an error.
 - **MCP.** `mcp: [figma]` attaches a server declared in `providers.toml` under `[mcp.servers.<name>]`, never in a
   workflow. A stdio server runs inside the node's OS sandbox with only its `env_allow` variables and the
-  network closed unless the entry opens it; `access = "read_only"` hides every tool that is not marked
-  read only. Tools appear as `mcp__server__tool`, results are compacted like shell output, and after a
+  network closed unless the entry opens it. `access` says whether the server may write the node's worktree,
+  and `mutating = true` offers the tools that may change things (otherwise only tools marked read only
+  are visible). An agent that attaches a server with a writable worktree counts as a writer, so it may not
+  run in parallel with another node. Tools appear as `mcp__server__tool`, results are compacted like shell output, and after a
   `kill -9` an unfinished read only call is run again while any other is reported to the model as
   interrupted and never repeated. A remote server takes its token from the environment or keychain.
 - **Context.** An agent's `context` block can `inherit` channels (full or summarized), take the final answer of

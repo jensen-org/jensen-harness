@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::cli_binary_crash_resume::{Daemon, count};
@@ -13,7 +13,7 @@ struct World {
     config: PathBuf,
     state: PathBuf,
     worktree: PathBuf,
-    log: PathBuf,
+    log: String,
 }
 
 fn tool_call(name: &str, arguments: &str) -> ResponseTemplate {
@@ -62,7 +62,7 @@ fn world(provider: &MockServer) -> World {
         worktree.join("design.yaml"),
     )
     .unwrap();
-    let log = worktree.join("mcp.log");
+    let log = format!("mcp-{}.log", uuid::Uuid::new_v4());
     let server = testkit_mcp_path();
     let library = concat!(env!("CARGO_MANIFEST_DIR"), "/agents");
     let config = root.join("providers.toml");
@@ -85,12 +85,13 @@ api_key_env = "JENSEN_HARNESS_E2E_KEY"
 
 [mcp.servers.excalidraw]
 command = "{server}"
-env_allow = ["TESTKIT_LOG", "TESTKIT_DRAW_DELAY", "TESTKIT_ECHO_DELAY"]
-access = "read_write"
+env_allow = ["TESTKIT_LOG_NAME", "TESTKIT_DRAW_DELAY", "TESTKIT_ECHO_DELAY"]
+access = "read_only"
+mutating = true
 
 [mcp.servers.figma]
 command = "{server}"
-env_allow = ["TESTKIT_LOG"]
+env_allow = ["TESTKIT_LOG_NAME"]
 access = "read_only"
 "#,
             provider.uri(),
@@ -107,10 +108,37 @@ access = "read_only"
     }
 }
 
-async fn wait_for_log(log: &Path, wanted: &str) {
+fn log_lines(name: &str) -> Vec<String> {
+    let mut places: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("jensen-harness-")
+        })
+        .map(|entry| entry.path().join(name))
+        .filter(|path| path.is_file())
+        .filter_map(|path| Some((std::fs::metadata(&path).ok()?.created().ok()?, path)))
+        .collect();
+    places.sort();
+    places
+        .iter()
+        .flat_map(|(_, path)| {
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+async fn wait_for_log(name: &str, wanted: &str) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if std::fs::read_to_string(log).is_ok_and(|text| text.contains(wanted)) {
+            if log_lines(name).iter().any(|line| line == wanted) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -124,14 +152,6 @@ fn bodies(requests: &[wiremock::Request]) -> Vec<Value> {
     requests
         .iter()
         .map(|request| serde_json::from_slice(&request.body).unwrap())
-        .collect()
-}
-
-fn lines(log: &Path) -> Vec<String> {
-    std::fs::read_to_string(log)
-        .unwrap()
-        .lines()
-        .map(str::to_owned)
         .collect()
 }
 
@@ -149,11 +169,13 @@ async fn killed_during(
     )
     .await;
     let world = world(&first);
-    let log = world.log.display().to_string();
     let mut daemon = Daemon::start_with(
         &world.config,
         &world.state,
-        &[("TESTKIT_LOG", log.as_str()), (delay_variable, "120")],
+        &[
+            ("TESTKIT_LOG_NAME", world.log.as_str()),
+            (delay_variable, "120"),
+        ],
     );
     daemon
         .send(
@@ -192,11 +214,10 @@ async fn resumed(world: &World, run: &str) -> (Value, MockServer) {
         })
         .collect();
     std::fs::write(&world.config, rewritten.join("\n")).unwrap();
-    let log = world.log.display().to_string();
     let mut daemon = Daemon::start_with(
         &world.config,
         &world.state,
-        &[("TESTKIT_LOG", log.as_str())],
+        &[("TESTKIT_LOG_NAME", world.log.as_str())],
     );
     let resumed = daemon
         .call(1, "workflow.resume", json!({"run_id": run}))
@@ -214,7 +235,7 @@ async fn a_mutating_mcp_call_cut_by_a_kill_is_reported_to_the_model_and_never_re
         "draw:box",
     )
     .await;
-    assert_eq!(lines(&world.log), ["draw:box"]);
+    assert_eq!(log_lines(&world.log), ["draw:box"]);
     let before = bodies(&first.received_requests().await.unwrap());
     let architect_tools: Vec<&str> = before[0]["tools"]
         .as_array()
@@ -249,7 +270,7 @@ async fn a_mutating_mcp_call_cut_by_a_kill_is_reported_to_the_model_and_never_re
         json!({"steps": ["a"]})
     );
     assert_eq!(
-        lines(&world.log),
+        log_lines(&world.log),
         ["draw:box"],
         "the drawing must not be made twice"
     );
@@ -318,13 +339,13 @@ async fn a_read_only_mcp_call_cut_by_a_kill_is_run_again() {
         "echo:ping",
     )
     .await;
-    assert_eq!(lines(&world.log), ["echo:ping"]);
+    assert_eq!(log_lines(&world.log), ["echo:ping"]);
 
     let (outcome, second) = resumed(&world, &run).await;
 
     assert_eq!(outcome["result"]["status"], "succeeded", "{outcome}");
     assert_eq!(
-        lines(&world.log),
+        log_lines(&world.log),
         ["echo:ping", "echo:ping"],
         "a read only call is repeated"
     );
