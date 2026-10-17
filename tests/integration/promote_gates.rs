@@ -287,3 +287,33 @@ fn a_dot_git_directory_in_any_case_cannot_even_be_snapshotted() {
             .is_err()
     );
 }
+
+#[test]
+fn operator_patterns_match_nested_paths_and_windows_tricks_are_refused() {
+    let fixture = fixture();
+    let config = GateConfig {
+        protected: vec!["*.pem".to_owned()],
+        ..GateConfig::default()
+    };
+    let report = evaluate(&fixture, config, "g12", |dir| {
+        std::fs::create_dir_all(dir.join("deep/er")).unwrap();
+        std::fs::write(dir.join("deep/er/cert.PEM"), "x\n").unwrap();
+        std::fs::write(dir.join("trailing."), "x\n").unwrap();
+        std::fs::write(dir.join("stream:name"), "x\n").unwrap();
+        std::fs::write(dir.join(".git\u{206b}modules"), "x\n").unwrap();
+    });
+    let blocked = reasons(&report);
+    for needle in [
+        "deep/er/cert.PEM",
+        "trailing.",
+        "stream:name",
+        ".git\u{206b}modules",
+    ] {
+        assert!(
+            blocked
+                .iter()
+                .any(|line| line.starts_with("path:") && line.contains(needle)),
+            "{needle:?} not blocked in {blocked:?}"
+        );
+    }
+}

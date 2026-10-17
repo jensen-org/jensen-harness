@@ -14,6 +14,8 @@ pub enum PromoteError {
     TamperedWorktree { node: String, reason: String },
     #[error("symlink `{path}` in node `{node}` points outside its worktree")]
     EscapingSymlink { node: String, path: String },
+    #[error("promoting `{node}` conflicts with the integration branch in: {files}")]
+    PromotionConflict { node: String, files: String },
     #[error("path {0:?} in a worktree is not valid UTF-8")]
     NonUtf8Path(PathBuf),
     #[error("{0}")]

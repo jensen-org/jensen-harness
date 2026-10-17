@@ -308,3 +308,74 @@ fn libgit2_is_not_a_dependency() {
         "git2 is back in the tree"
     );
 }
+
+fn node_with(fixture: &Fixture, run: &str, node: &str, file: &str, text: &str) -> String {
+    let handle = fixture.isolation.prepare_node(run, node).unwrap();
+    std::fs::write(handle.path.join(file), text).unwrap();
+    fixture
+        .isolation
+        .snapshot(&handle, &provenance(run, node))
+        .unwrap()
+        .commit
+}
+
+#[test]
+fn promotion_fast_forwards_is_idempotent_and_merges_disjoint_work() {
+    let fixture = fixture();
+    let base = fixture.isolation.begin_run("m1").unwrap();
+    let first = node_with(&fixture, "m1", "one", "one.txt", "1\n");
+    let second = node_with(&fixture, "m1", "two", "two.txt", "2\n");
+
+    let moved = fixture
+        .isolation
+        .merge_into_integration("m1", &first, &provenance("m1", "one"))
+        .unwrap();
+    assert_eq!(moved.how, jensen_harness_promote::Promotion::FastForward);
+    assert_eq!(moved.head, first);
+    let again = fixture
+        .isolation
+        .merge_into_integration("m1", &first, &provenance("m1", "one"))
+        .unwrap();
+    assert_eq!(again.how, jensen_harness_promote::Promotion::Already);
+
+    let merged = fixture
+        .isolation
+        .merge_into_integration("m1", &second, &provenance("m1", "two"))
+        .unwrap();
+    assert_eq!(merged.how, jensen_harness_promote::Promotion::Merged);
+    let listing = git(
+        &fixture.repo,
+        &["ls-tree", "-r", "--name-only", &merged.head],
+    );
+    assert!(listing.contains("one.txt") && listing.contains("two.txt"));
+    let parents = git(&fixture.repo, &["log", "-1", "--format=%P", &merged.head]);
+    assert_eq!(parents.split_whitespace().count(), 2);
+    assert_eq!(git(&fixture.repo, &["rev-parse", "main"]), base);
+    assert_eq!(
+        fixture.isolation.integration_head("m1").unwrap(),
+        merged.head
+    );
+}
+
+#[test]
+fn promotion_that_conflicts_is_a_typed_error_and_moves_nothing() {
+    let fixture = fixture();
+    fixture.isolation.begin_run("m2").unwrap();
+    let first = node_with(&fixture, "m2", "one", "a.txt", "from one\n");
+    let second = node_with(&fixture, "m2", "two", "a.txt", "from two\n");
+    fixture
+        .isolation
+        .merge_into_integration("m2", &first, &provenance("m2", "one"))
+        .unwrap();
+
+    let refused = fixture
+        .isolation
+        .merge_into_integration("m2", &second, &provenance("m2", "two"))
+        .unwrap_err();
+
+    assert!(
+        matches!(&refused, PromoteError::PromotionConflict { files, .. } if files.contains("a.txt")),
+        "{refused}"
+    );
+    assert_eq!(fixture.isolation.integration_head("m2").unwrap(), first);
+}

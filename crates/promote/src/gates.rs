@@ -1,3 +1,4 @@
+use gix::bstr::BStr;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
 use crate::diff::{Change, ChangeStatus, FileKind};
@@ -27,7 +28,7 @@ fn normalized(component: &str) -> String {
         .filter(|c| {
             !matches!(
                 *c,
-                '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{feff}'
+                '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{206a}'..='\u{206f}' | '\u{feff}'
             )
         })
         .collect::<String>()
@@ -36,15 +37,29 @@ fn normalized(component: &str) -> String {
 }
 
 fn reserved_component(path: &str) -> bool {
-    path.split('/').any(|component| {
-        let name = normalized(component);
-        let dotted = format!(".{}", name.trim_start_matches('.'));
-        RESERVED_COMPONENTS.contains(&name.as_str())
-            || RESERVED_COMPONENTS.contains(&dotted.as_str()) && name.starts_with('.')
-            || RESERVED_SHORT_PREFIXES
-                .iter()
-                .any(|prefix| name.starts_with(prefix))
-    })
+    let options = gix::validate::path::component::Options {
+        protect_windows: true,
+        protect_hfs: true,
+        protect_ntfs: true,
+    };
+    let names: Vec<String> = path.split('/').map(normalized).collect();
+    let unsafe_name = path.split('/').any(|component| {
+        component.contains(':')
+            || component.ends_with(['.', ' '])
+            || gix::validate::path::component(BStr::new(component), None, options).is_err()
+    });
+    unsafe_name
+        || names.iter().any(|name| {
+            let dotted = format!(".{}", name.trim_start_matches('.'));
+            RESERVED_COMPONENTS.contains(&name.as_str())
+                || (name.starts_with('.') && RESERVED_COMPONENTS.contains(&dotted.as_str()))
+                || RESERVED_SHORT_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+        })
+        || names.windows(2).any(
+            |pair| matches!(pair, [first, second] if first == ".github" && second == "workflows"),
+        )
 }
 
 #[derive(Debug, Clone)]
@@ -105,15 +120,20 @@ fn finding(gate: &'static str, path: &str, reason: impl Into<String>) -> Finding
 impl Gates {
     pub fn new(config: GateConfig) -> Result<Self, PromoteError> {
         let mut builder = GlobSetBuilder::new();
-        for pattern in DEFAULT_PROTECTED
+        for (pattern, literal) in DEFAULT_PROTECTED
             .iter()
-            .map(|pattern| (*pattern).to_owned())
-            .chain(config.protected.iter().cloned())
+            .map(|pattern| ((*pattern).to_owned(), true))
+            .chain(
+                config
+                    .protected
+                    .iter()
+                    .map(|pattern| (pattern.clone(), false)),
+            )
         {
             builder.add(
                 GlobBuilder::new(&pattern)
                     .case_insensitive(true)
-                    .literal_separator(true)
+                    .literal_separator(literal)
                     .build()
                     .map_err(git)?,
             );
