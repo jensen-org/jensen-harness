@@ -127,6 +127,13 @@ pub enum ProviderError {
 pub trait Provider: Send + Sync + std::fmt::Debug {
     fn id(&self) -> &str;
 
+    /// Whether this provider's usage includes prompt cache tokens. A
+    /// provider that does not report them can never be accused of a low hit
+    /// ratio.
+    fn reports_cache(&self) -> bool {
+        false
+    }
+
     /// # Errors
     /// Returns [`ProviderError`] when the upstream call fails or the
     /// response cannot be parsed into a known shape.

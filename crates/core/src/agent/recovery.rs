@@ -79,6 +79,8 @@ struct TurnResults {
 }
 
 pub(super) struct Rebuilt {
+    pub responses: u32,
+    pub cache_alerted: bool,
     pub turns: Vec<Turn>,
     pub open: Option<OpenPrompt>,
     pub soft_notified: bool,
@@ -144,6 +146,8 @@ fn replay(session_id: &str, events: &[Event]) -> Result<Recovered, AgentError> {
     let mut turns: Vec<Turn> = Vec::new();
     let mut open: Option<OpenPrompt> = None;
     let mut soft_notified = false;
+    let mut responses = 0u32;
+    let mut cache_alerted = false;
     let mut last_event = None;
     for event in events {
         last_event = Some(event.id.clone());
@@ -161,6 +165,7 @@ fn replay(session_id: &str, events: &[Event]) -> Result<Recovered, AgentError> {
                     role: Role::Assistant,
                     content: responded.content.clone(),
                 });
+                responses += 1;
                 prompt.tally.model_calls += 1;
                 prompt.tally.add_usage(responded.usage);
                 prompt.tally.cost_micro_usd = prompt
@@ -214,7 +219,8 @@ fn replay(session_id: &str, events: &[Event]) -> Result<Recovered, AgentError> {
                 open_of(&mut open, event)?.pending = None;
             }
             EventKind::PromptFinished => open = None,
-            EventKind::ModelFailed | EventKind::BudgetExhausted | EventKind::CacheLow => {}
+            EventKind::CacheLow => cache_alerted = true,
+            EventKind::ModelFailed | EventKind::BudgetExhausted => {}
         }
     }
     let created = created.ok_or_else(|| {
@@ -231,6 +237,8 @@ fn replay(session_id: &str, events: &[Event]) -> Result<Recovered, AgentError> {
         },
         worktree: created.worktree,
         rebuilt: Rebuilt {
+            responses,
+            cache_alerted,
             turns,
             open,
             soft_notified,

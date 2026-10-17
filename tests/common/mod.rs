@@ -143,6 +143,7 @@ pub struct Scripted {
     script: Mutex<VecDeque<Result<CompletionResponse, ProviderError>>>,
     fallback: Option<CompletionResponse>,
     requests: Mutex<Vec<CompletionRequest>>,
+    reports_cache: bool,
 }
 
 impl Scripted {
@@ -151,7 +152,14 @@ impl Scripted {
             script: Mutex::new(script.into()),
             fallback: None,
             requests: Mutex::new(Vec::new()),
+            reports_cache: false,
         }
+    }
+
+    /// Makes this provider claim it reports prompt cache tokens.
+    pub fn reporting_cache(mut self) -> Self {
+        self.reports_cache = true;
+        self
     }
 
     pub fn of(replies: Vec<CompletionResponse>) -> Self {
@@ -178,6 +186,10 @@ impl Scripted {
 impl Provider for Scripted {
     fn id(&self) -> &str {
         "scripted"
+    }
+
+    fn reports_cache(&self) -> bool {
+        self.reports_cache
     }
 
     async fn complete(
@@ -265,5 +277,11 @@ pub fn costing(tokens: u64, mut response: CompletionResponse) -> CompletionRespo
         input_tokens: tokens,
         ..Usage::default()
     };
+    response
+}
+
+/// A reply with exactly this usage.
+pub fn with_usage(mut response: CompletionResponse, usage: Usage) -> CompletionResponse {
+    response.usage = usage;
     response
 }

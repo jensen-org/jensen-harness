@@ -120,13 +120,34 @@ pub struct SessionConfig {
 
 pub struct Session {
     config: SessionConfig,
+    run_id: String,
     model: String,
     turns: Vec<Turn>,
     tools: ToolSet,
     store: Store,
     soft_notified: bool,
+    responses: u32,
+    cache_alerted: bool,
     open: Option<OpenPrompt>,
     last_event: Option<String>,
+}
+
+/// Below this share of the prompt read from cache, the cache is not doing
+/// its job.
+const CACHE_LOW_PERMILLE: u64 = 800;
+
+/// Parts per thousand of the prompt that came from cache, or `None` when
+/// there was no prompt to measure.
+fn cache_hit_permille(usage: &Usage) -> Option<u64> {
+    let prompt = usage
+        .input_tokens
+        .checked_add(usage.cache_read_tokens)?
+        .checked_add(usage.cache_write_tokens)?;
+    if prompt == 0 {
+        return None;
+    }
+    let permille = u128::from(usage.cache_read_tokens) * 1000 / u128::from(prompt);
+    u64::try_from(permille).ok()
 }
 
 fn model_id(address: &str) -> String {
@@ -206,10 +227,13 @@ impl Session {
         Ok(Self {
             model: model_id(&config.model_address),
             config,
+            run_id,
             turns: Vec::new(),
             tools,
             store,
             soft_notified: false,
+            responses: 0,
+            cache_alerted: false,
             open: None,
             last_event: Some(created.id),
         })
@@ -244,13 +268,19 @@ impl Session {
                 .await?;
             last_event = released.map(|event| event.id).or(last_event);
         }
+        let run_id = config.run_id.clone().ok_or_else(|| {
+            AgentError::Journal(format!("session {} has no run", config.session_id))
+        })?;
         Ok(Self {
             model: model_id(&config.model_address),
             config,
+            run_id,
             turns: rebuilt.turns,
             tools,
             store,
             soft_notified: rebuilt.soft_notified,
+            responses: rebuilt.responses,
+            cache_alerted: rebuilt.cache_alerted,
             open: rebuilt.open,
             last_event,
         })
@@ -370,17 +400,21 @@ impl Session {
                 Some(price) => price.cost(&response.usage)?,
                 None => 0,
             };
+            let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let permille = cache_hit_permille(&response.usage);
             let event = self.new_event(
                 EventKind::ModelResponded,
                 json!({
                     "call_id": call_id,
+                    "run_id": self.run_id,
                     "model": self.config.model_address,
                     "content": response.content,
                     "stop_reason": response.stop_reason,
                     "usage": response.usage,
                     "cost_micro_usd": call_cost,
                     "price_version": self.config.price_version,
-                    "latency_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    "latency_ms": latency_ms,
+                    "cache_hit_permille": permille,
                 }),
             );
             let stored = self
@@ -393,6 +427,24 @@ impl Session {
                 )
                 .await?;
             self.last_event = stored.map(|event| event.id).or(self.last_event.take());
+            tracing::info!(
+                session_id = %self.config.session_id,
+                run_id = %self.run_id,
+                model = %self.config.model_address,
+                call_id = %call_id,
+                input_tokens = response.usage.input_tokens,
+                output_tokens = response.usage.output_tokens,
+                cache_read_tokens = response.usage.cache_read_tokens,
+                cache_write_tokens = response.usage.cache_write_tokens,
+                cost_micro_usd = call_cost,
+                price_version = %self.config.price_version,
+                latency_ms,
+                stop_reason = ?response.stop_reason,
+                cache_hit_permille = ?permille,
+                "model call settled"
+            );
+            self.check_cache(provider, &call_id, permille).await?;
+            self.responses += 1;
             open.tally.model_calls += 1;
             open.tally.add_usage(response.usage);
             open.tally.cost_micro_usd = open.tally.cost_micro_usd.saturating_add(call_cost);
@@ -434,6 +486,39 @@ impl Session {
         )
         .await?;
         Ok(outcome)
+    }
+
+    /// The first call writes the cache, so only a later one can fall short.
+    /// Said once per session, and never for a provider that does not report
+    /// cache tokens.
+    async fn check_cache(
+        &mut self,
+        provider: &dyn Provider,
+        call_id: &str,
+        permille: Option<u64>,
+    ) -> Result<(), AgentError> {
+        let Some(permille) = permille else {
+            return Ok(());
+        };
+        if !provider.reports_cache()
+            || self.responses == 0
+            || self.cache_alerted
+            || permille >= CACHE_LOW_PERMILLE
+        {
+            return Ok(());
+        }
+        self.cache_alerted = true;
+        tracing::warn!(
+            session_id = %self.config.session_id,
+            call_id,
+            cache_hit_permille = permille,
+            "less than 80% of the prompt was read from cache"
+        );
+        self.record(
+            EventKind::CacheLow,
+            json!({"call_id": call_id, "cache_hit_permille": permille}),
+        )
+        .await
     }
 
     fn new_event(&self, kind: EventKind, payload: Value) -> NewEvent {
