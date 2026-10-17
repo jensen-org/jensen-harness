@@ -217,13 +217,17 @@ impl Isolation {
         })
     }
 
-    pub fn remote_url(&self, name: &str) -> Result<String, PromoteError> {
+    pub fn remote_url(&self, name: &str, push: bool) -> Result<String, PromoteError> {
         let repo = self.open_repo()?;
         let remote = repo
             .find_remote(name)
             .map_err(|error| PromoteError::UnknownForge(format!("{name}: {error}")))?;
         let url = remote
-            .url(gix::remote::Direction::Push)
+            .url(if push {
+                gix::remote::Direction::Push
+            } else {
+                gix::remote::Direction::Fetch
+            })
             .ok_or_else(|| PromoteError::UnknownForge(name.to_owned()))?;
         Ok(url.to_bstring().to_string())
     }
@@ -235,9 +239,8 @@ impl Isolation {
             .ok_or(PromoteError::NoBaseBranch)
     }
 
-    #[must_use]
-    pub fn repo_path(&self) -> &Path {
-        &self.repo
+    pub fn objects_dir(&self) -> Result<PathBuf, PromoteError> {
+        Ok(self.open_repo()?.common_dir().join("objects"))
     }
 
     pub fn remove_node(&self, handle: &NodeWorktree) -> Result<(), PromoteError> {

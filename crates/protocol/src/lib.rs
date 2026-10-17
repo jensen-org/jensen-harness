@@ -316,6 +316,10 @@ pub struct WorkflowRunResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
     pub super_steps: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

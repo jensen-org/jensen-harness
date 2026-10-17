@@ -49,6 +49,7 @@ impl std::fmt::Debug for Secret {
 #[derive(Debug, Clone)]
 pub struct ForgeTarget {
     pub kind: ForgeKind,
+    pub host: String,
     pub api_base: Option<String>,
     pub project: String,
     pub token: Secret,
@@ -68,33 +69,59 @@ pub struct Published {
     pub existing: bool,
 }
 
+fn clean_project(path: &str) -> Option<String> {
+    let project = path.trim_matches('/').trim_end_matches(".git");
+    let valid = project.contains('/')
+        && project.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        });
+    valid.then(|| project.to_owned())
+}
+
+fn clean_host(host: &str) -> Option<String> {
+    let valid = !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'));
+    valid.then(|| host.to_ascii_lowercase())
+}
+
 pub fn parse_remote(url: &str) -> Result<RemoteRef, PromoteError> {
     let unknown = || PromoteError::UnknownForge(url.to_owned());
-    let (authority, path) = if let Some((scheme, rest)) = url.split_once("://") {
-        if !matches!(scheme, "https" | "http" | "ssh" | "git") {
+    if url
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '\\' | '?' | '#'))
+    {
+        return Err(unknown());
+    }
+    if url.contains("://") {
+        let parsed = url::Url::parse(url).map_err(|_| unknown())?;
+        let ssh = parsed.scheme() == "ssh";
+        if !matches!(parsed.scheme(), "https" | "http" | "ssh")
+            || parsed.password().is_some()
+            || (!ssh && !parsed.username().is_empty())
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
             return Err(unknown());
         }
-        rest.split_once('/').ok_or_else(unknown)?
-    } else {
-        let (authority, path) = url.split_once(':').ok_or_else(unknown)?;
-        if authority.contains('/') || !authority.contains('@') {
-            return Err(unknown());
-        }
-        (authority, path)
-    };
-    let host = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host)
-        .split(':')
-        .next()
-        .unwrap_or_default();
-    let project = path.trim_matches('/').trim_end_matches(".git");
-    if host.is_empty() || !project.contains('/') {
+        let host = parsed.host_str().and_then(clean_host).ok_or_else(unknown)?;
+        let project = clean_project(parsed.path()).ok_or_else(unknown)?;
+        return Ok(RemoteRef { host, project });
+    }
+    let (authority, path) = url.split_once(':').ok_or_else(unknown)?;
+    let (user, host) = authority.split_once('@').ok_or_else(unknown)?;
+    if user.is_empty() || user.contains('@') {
         return Err(unknown());
     }
     Ok(RemoteRef {
-        host: host.to_ascii_lowercase(),
-        project: project.to_owned(),
+        host: clean_host(host).ok_or_else(unknown)?,
+        project: clean_project(path).ok_or_else(unknown)?,
     })
 }
 

@@ -14,7 +14,7 @@ use jensen_harness_core::store::{
 use jensen_harness_core::toolset::Access;
 use jensen_harness_promote::forge::open_request;
 use jensen_harness_promote::push::push;
-use jensen_harness_promote::{Finding, GateConfig, Gates, Isolation, PromoteError, Provenance};
+use jensen_harness_promote::{Finding, GateConfig, Gates, PromoteError, Provenance};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -662,7 +662,8 @@ async fn run_promote(
 
 async fn run_publish(shared: &Shared, id: &str, node: &PublishNode) -> Result<Finished, RunError> {
     let isolation = shared.isolation()?;
-    let remote = isolation.remote_url("origin")?;
+    let remote = isolation.remote_url("origin", false)?;
+    let push_url = isolation.remote_url("origin", true)?;
     let target = shared.host.forge(&remote)?;
     let head = format!("jensen/{}", shared.run_id);
     let base = isolation.base_branch()?;
@@ -673,9 +674,9 @@ async fn run_publish(shared: &Shared, id: &str, node: &PublishNode) -> Result<Fi
     )
     .await?;
     push(
-        isolation.repo_path(),
-        &remote,
-        &Isolation::integration_ref(&shared.run_id),
+        &isolation.objects_dir()?,
+        &isolation.integration_head(&shared.run_id)?,
+        &push_url,
         &head,
         &target,
     )

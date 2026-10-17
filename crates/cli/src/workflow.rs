@@ -105,6 +105,8 @@ fn run_response(id: RequestId, report: RunReport) -> Response {
             outcomes: report.outcomes,
             failure: report.failure.map(|failure| failure.to_string()),
             super_steps: report.super_steps,
+            integration_branch: report.integration_branch,
+            head: report.head,
         }),
     )
 }

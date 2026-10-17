@@ -121,6 +121,7 @@ async fn run_publish(
             isolation: fixture.isolation.clone(),
             target: ForgeTarget {
                 kind,
+                host: "github.com".to_owned(),
                 api_base: Some(api.uri()),
                 project: "acme/app".to_owned(),
                 token: Secret::new(TOKEN),
@@ -336,14 +337,15 @@ async fn pushing_to_an_unreachable_remote_fails_without_leaking_the_token() {
     let fixture = fixture();
     let target = ForgeTarget {
         kind: ForgeKind::GitHub,
+        host: "127.0.0.1".to_owned(),
         api_base: None,
         project: "acme/app".to_owned(),
         token: Secret::new(TOKEN),
     };
     let error = jensen_harness_promote::push::push(
-        &fixture.repo,
+        &fixture.isolation.objects_dir().unwrap(),
+        &git(&fixture.repo, &["rev-parse", "HEAD"]),
         "http://127.0.0.1:1/acme/app.git",
-        "refs/heads/main",
         "jensen/x",
         &target,
     )
@@ -358,7 +360,7 @@ async fn pushing_to_an_unreachable_remote_fails_without_leaking_the_token() {
 fn remote_urls_in_every_common_form_are_understood() {
     for url in [
         "https://github.com/acme/app.git",
-        "https://user@github.com/acme/app",
+        "https://github.com/acme/app",
         "git@github.com:acme/app.git",
         "ssh://git@github.com/acme/app.git",
     ] {

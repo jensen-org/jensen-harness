@@ -45,6 +45,7 @@ mod core_tools_shell;
 
 mod cli_binary_crash_resume;
 mod cli_binary_e2e;
+mod cli_binary_workflow_promote;
 mod cli_binary_workflow_resume;
 mod cli_daemon_round_trip;
 mod cli_rpc;

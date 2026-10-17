@@ -87,6 +87,42 @@ marked `idempotent`. Run checkpoints are kept in `<state>.workflow-runs`, a dire
 open, next to the state file; like the state file it belongs to one daemon. A node result is also recorded by a hash of the node and its inputs, so a node that
 finished inside a wave that did not commit is not run again. Cancelling a run releases its reservations.
 
+## Isolation, promotion and publishing
+
+A workflow with a `tools: writer` agent needs a git repository. Each writer works in its own linked
+worktree under `<state>.workspaces/<run>/<node>` (mode 0700), on the branch `jensen/<run>/node/<node>`,
+and nothing it does touches your branch or working tree. The host never reads git metadata from that
+worktree: it checks the `.git` pointer, then builds the commit itself from the files with gitoxide, with
+`Jensen-Run`, `Jensen-Node`, `Jensen-Session`, `Jensen-Model` and `Jensen-Spec` trailers. The whole crate
+is gitoxide; the only `git` it runs is `git push`, because gitoxide has no push yet.
+
+- A `promote` node (`from` a writer, `requires` verified channels) runs the gates on the diff and then
+  puts the work on the run's integration branch `jensen/<run>/integration`: one squashed commit when the
+  branch has not moved, otherwise a merge commit that is gated again. A conflict, a failed gate or an
+  unmet `requires` ends the node as `conflict` or `blocked` with the findings in its output channel, and
+  the branch is untouched.
+- Gates: protected paths (`.git`, `.github/workflows`, `.gitlab-ci.yml`, `.gitmodules`, `.jensen`, plus
+  `protected` globs), matched case insensitively and with NTFS and HFS normalization; added symlinks and
+  submodules; a limit on changed files and added bytes; binary files unless allowed; and a secret screen
+  (yara-x rules for private keys, cloud, VCS and model keys, credentialed URLs) over every blob. A report
+  names the file and the rule, never the match. Risk flags (new `unsafe`, process spawning, `eval`,
+  manifests and lockfiles) inform without blocking.
+- A `publish` node (`from` a promote node) pushes the branch as `jensen/<run>` and opens a GitHub pull
+  request or a GitLab merge request, reusing one that is already open for the branch. The push runs from a
+  throwaway repository that borrows the object store, so no repository config can redirect it, and the
+  token travels as an HTTP header bound to the forge's host, never in an argument.
+- Verifiers and commands after a writer run in the writer's worktree with a read write sandbox, since a
+  verifier such as `make check` writes build output. An agent without `tools: writer` gets a read only
+  sandbox and a tool set that refuses `edit` and `shell`.
+
+Forges are configured in `providers.toml`, never in a workflow: `[forges.github]` and `[forges.gitlab]`
+take `base_url` (GitHub Enterprise, self hosted GitLab) and `api_key_env` or `api_key_keychain`
+(`jensen-harness auth set github`). The forge is read from the host of `origin`; anything else is
+`UnknownForge`. See `providers.example.toml` and `workflows/examples/implement.yaml`.
+
+Not covered yet: a denylist of dangerous commands, a command audit log, circuit breakers on repeated
+failures, and waiting for CI results from the forge.
+
 ## Budget
 
 Every model call is reserved before it is made and settled with the provider's real usage after. Scopes

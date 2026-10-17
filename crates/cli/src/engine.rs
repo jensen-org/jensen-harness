@@ -85,6 +85,7 @@ impl ModelSource for ConfiguredModels {
                 let token = self.registry.forge_token(name, self.secrets.as_ref())?;
                 return Ok(ForgeTarget {
                     kind,
+                    host: remote.host,
                     api_base: entry.base_url.clone(),
                     project: remote.project,
                     token: Secret::new(token),

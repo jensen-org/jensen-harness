@@ -20,6 +20,7 @@ ignore = "0.4.33"
 octocrab = "0.54.5"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+tempfile = "3"
 thiserror = "2"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "process", "time"] }
 tree-sitter = "0.27"
