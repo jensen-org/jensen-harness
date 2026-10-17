@@ -16,7 +16,6 @@ pub struct NodeWorktree {
     pub node: String,
     pub path: PathBuf,
     pub branch: String,
-    pub(crate) name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -73,8 +72,6 @@ fn tip_of(repo: &gix::Repository, reference: &str) -> Result<Option<gix::ObjectI
 }
 
 impl Isolation {
-    /// # Errors
-    /// [`PromoteError::NotARepository`] when `repo` is not a git repository.
     pub fn open(repo: &Path, workspaces: &Path) -> Result<Self, PromoteError> {
         let repo = repo.canonicalize().map_err(|error| io(repo, error))?;
         open_isolated(&repo).map_err(|error| PromoteError::NotARepository {
@@ -87,7 +84,7 @@ impl Isolation {
         })
     }
 
-    fn open_repo(&self) -> Result<gix::Repository, PromoteError> {
+    pub(crate) fn open_repo(&self) -> Result<gix::Repository, PromoteError> {
         open_isolated(&self.repo)
     }
 
@@ -101,11 +98,6 @@ impl Isolation {
         format!("refs/heads/jensen/{run}/node/{node}")
     }
 
-    /// Creates the run's integration branch at the repository's HEAD, or
-    /// returns its tip when it already exists.
-    ///
-    /// # Errors
-    /// [`PromoteError`] when the name is unsafe or git refuses.
     pub fn begin_run(&self, run: &str) -> Result<String, PromoteError> {
         checked(run)?;
         let repo = self.open_repo()?;
@@ -124,8 +116,6 @@ impl Isolation {
         Ok(head.to_string())
     }
 
-    /// # Errors
-    /// [`PromoteError`] when the run has no integration branch.
     pub fn integration_head(&self, run: &str) -> Result<String, PromoteError> {
         checked(run)?;
         let repo = self.open_repo()?;
@@ -134,12 +124,6 @@ impl Isolation {
             .ok_or_else(|| PromoteError::Git(format!("run {run} has no integration branch")))
     }
 
-    /// Creates the node's branch at the integration head and a linked
-    /// worktree on it, or returns the existing one after checking it.
-    ///
-    /// # Errors
-    /// [`PromoteError`] when git refuses or an existing worktree was
-    /// tampered with.
     pub fn prepare_node(&self, run: &str, node: &str) -> Result<NodeWorktree, PromoteError> {
         checked(run)?;
         checked(node)?;
@@ -162,23 +146,16 @@ impl Isolation {
             node: node.to_owned(),
             path,
             branch,
-            name: format!("{run}.{node}"),
         };
         if handle.path.exists() {
             worktree::verify(&self.repo, &handle)?;
             return Ok(handle);
         }
-        worktree::create(&self.repo, &self.workspaces, &handle)?;
+        worktree::create(&repo, &self.workspaces, &handle)?;
         worktree::verify(&self.repo, &handle)?;
         Ok(handle)
     }
 
-    /// Writes the worktree's files into the real repository as one commit on
-    /// the node branch. Nothing is read from the worktree's git metadata.
-    ///
-    /// # Errors
-    /// [`PromoteError`] on a tampered worktree, a symlink that leaves it, or
-    /// a git failure.
     pub fn snapshot(
         &self,
         handle: &NodeWorktree,
@@ -240,10 +217,8 @@ impl Isolation {
         })
     }
 
-    /// # Errors
-    /// [`PromoteError`] when git refuses to remove the worktree.
     pub fn remove_node(&self, handle: &NodeWorktree) -> Result<(), PromoteError> {
-        worktree::remove(&self.repo, handle)
+        worktree::remove(&self.open_repo()?, handle)
     }
 }
 

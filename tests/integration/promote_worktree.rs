@@ -3,7 +3,7 @@ use std::process::Command;
 
 use jensen_harness_promote::{Isolation, PromoteError, Provenance};
 
-fn git(dir: &Path, args: &[&str]) -> String {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args([
             "-c",
@@ -28,14 +28,14 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-struct Fixture {
+pub(crate) struct Fixture {
     _dir: tempfile::TempDir,
-    repo: PathBuf,
-    workspaces: PathBuf,
-    isolation: Isolation,
+    pub(crate) repo: PathBuf,
+    pub(crate) workspaces: PathBuf,
+    pub(crate) isolation: Isolation,
 }
 
-fn fixture() -> Fixture {
+pub(crate) fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let repo = root.join("repo");
@@ -56,7 +56,7 @@ fn fixture() -> Fixture {
     }
 }
 
-fn provenance(run: &str, node: &str) -> Provenance {
+pub(crate) fn provenance(run: &str, node: &str) -> Provenance {
     Provenance {
         run: run.to_owned(),
         node: node.to_owned(),
@@ -212,7 +212,7 @@ fn a_hostile_private_config_is_never_read_so_its_command_never_runs() {
     fixture.isolation.begin_run("r5").unwrap();
     let node = fixture.isolation.prepare_node("r5", "write").unwrap();
     let marker = fixture.workspaces.join("ran");
-    let private = fixture.repo.join(".git/worktrees/r5.write");
+    let private = fixture.repo.join(".git/worktrees/write");
     std::fs::write(
         private.join("config.worktree"),
         format!("[core]\n\tfsmonitor = touch {}\n", marker.display()),
@@ -300,25 +300,11 @@ fn removing_a_node_takes_its_worktree_away() {
 }
 
 #[test]
-fn libgit2_is_used_by_one_module_only() {
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates");
-    let mut users = Vec::new();
-    let mut stack = vec![crates];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "rs")
-                && std::fs::read_to_string(&path).unwrap().contains("git2::")
-            {
-                users.push(
-                    path.strip_prefix(env!("CARGO_MANIFEST_DIR"))
-                        .unwrap()
-                        .to_owned(),
-                );
-            }
-        }
-    }
-    assert_eq!(users, [PathBuf::from("crates/promote/src/worktree.rs")]);
+fn libgit2_is_not_a_dependency() {
+    let lock =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock")).unwrap();
+    assert!(
+        !lock.contains("name = \"git2\""),
+        "git2 is back in the tree"
+    );
 }

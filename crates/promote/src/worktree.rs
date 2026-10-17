@@ -1,29 +1,29 @@
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
-use git2::{Repository, WorktreeAddOptions, WorktreePruneOptions};
+use gix::progress::Discard;
+use gix::worktree::add::Head;
+use gix::worktree::remove::Force;
 
-use crate::error::{PromoteError, io};
+use crate::error::{PromoteError, git, io};
 use crate::isolation::NodeWorktree;
 
-fn libgit(error: git2::Error) -> PromoteError {
-    PromoteError::Git(error.message().to_owned())
-}
-
 pub(crate) fn create(
-    repo: &Path,
+    repo: &gix::Repository,
     workspaces: &Path,
     handle: &NodeWorktree,
 ) -> Result<(), PromoteError> {
     let parent = handle.path.parent().unwrap_or(workspaces);
     std::fs::create_dir_all(parent).map_err(|error| io(parent, error))?;
     restrict(workspaces)?;
-    let repository = Repository::open(repo).map_err(libgit)?;
-    let reference = repository.find_reference(&handle.branch).map_err(libgit)?;
-    let mut options = WorktreeAddOptions::new();
-    options.reference(Some(&reference));
-    repository
-        .worktree(&handle.name, &handle.path, Some(&options))
-        .map_err(libgit)?;
+    let branch = gix::refs::FullName::try_from(handle.branch.as_str()).map_err(git)?;
+    repo.add_worktree(
+        &handle.path,
+        Head::Attached(branch),
+        Discard,
+        &AtomicBool::new(false),
+    )
+    .map_err(git)?;
     Ok(())
 }
 
@@ -44,28 +44,35 @@ pub(crate) fn verify(repo: &Path, handle: &NodeWorktree) -> Result<(), PromoteEr
         .strip_prefix("gitdir:")
         .map(str::trim)
         .ok_or_else(|| tampered("the .git pointer is not a gitdir line".to_owned()))?;
-    let expected = repo.join(".git").join("worktrees").join(&handle.name);
-    let same = Path::new(recorded)
+    let admin = Path::new(recorded).canonicalize().map_err(|error| {
+        tampered(format!(
+            "the .git pointer names a missing directory: {error}"
+        ))
+    })?;
+    let registry = repo
+        .join(".git")
+        .join("worktrees")
         .canonicalize()
-        .ok()
-        .zip(expected.canonicalize().ok())
-        .is_some_and(|(found, wanted)| found == wanted);
-    if !same {
+        .map_err(|error| tampered(format!("the repository has no worktree registry: {error}")))?;
+    if admin.parent() != Some(registry.as_path()) {
         return Err(tampered(format!(
-            "the .git pointer names {recorded}, not {}",
-            expected.display()
+            "the .git pointer names {recorded}, outside the repository's worktrees"
         )));
+    }
+    let back = std::fs::read_to_string(admin.join("gitdir"))
+        .map_err(|error| tampered(format!("the worktree is not registered: {error}")))?;
+    let registered = Path::new(back.trim()).canonicalize().ok();
+    if registered != pointer.canonicalize().ok() {
+        return Err(tampered(
+            "the registration points at a different worktree".to_owned(),
+        ));
     }
     Ok(())
 }
 
-pub(crate) fn remove(repo: &Path, handle: &NodeWorktree) -> Result<(), PromoteError> {
-    let repository = Repository::open(repo).map_err(libgit)?;
-    let found = repository.find_worktree(&handle.name).map_err(libgit)?;
-    let mut options = WorktreePruneOptions::new();
-    options.valid(true).working_tree(true).locked(true);
-    found.prune(Some(&mut options)).map_err(libgit)?;
-    Ok(())
+pub(crate) fn remove(repo: &gix::Repository, handle: &NodeWorktree) -> Result<(), PromoteError> {
+    repo.remove_worktree(&handle.path, Force::DiscardChanges, Discard)
+        .map_err(git)
 }
 
 #[cfg(unix)]

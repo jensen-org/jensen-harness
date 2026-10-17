@@ -10,6 +10,7 @@ mod common;
 
 mod protocol_frame;
 
+mod promote_gates;
 mod promote_worktree;
 mod workflow_cli;
 mod workflow_dagrs_contract;
