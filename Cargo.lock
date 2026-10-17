@@ -3967,6 +3967,7 @@ dependencies = [
  "clap",
  "dirs",
  "jensen-harness-core",
+ "jensen-harness-extensions",
  "jensen-harness-promote",
  "jensen-harness-protocol",
  "jensen-harness-workflow",
@@ -4022,6 +4023,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jensen-harness-extensions"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "jensen-harness-core",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "jensen-harness-promote"
 version = "0.1.0"
 dependencies = [
@@ -4067,6 +4080,7 @@ dependencies = [
  "dagrs",
  "jensen-harness",
  "jensen-harness-core",
+ "jensen-harness-extensions",
  "jensen-harness-promote",
  "jensen-harness-protocol",
  "jensen-harness-workflow",
@@ -4092,6 +4106,7 @@ dependencies = [
  "cel",
  "dagrs",
  "jensen-harness-core",
+ "jensen-harness-extensions",
  "jensen-harness-promote",
  "jsonschema",
  "petgraph",

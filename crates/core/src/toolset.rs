@@ -131,6 +131,10 @@ pub trait ToolProvider: Send + Sync {
 
     fn replay(&self, name: &str) -> Replay;
 
+    fn system_note(&self) -> Option<String> {
+        None
+    }
+
     async fn invoke(&self, name: &str, input: &Value) -> Result<ProviderReply, ToolSetError>;
 }
 
@@ -233,6 +237,17 @@ impl ToolSet {
         let mut specs = Self::builtin_specs();
         specs.extend(extra);
         specs
+    }
+
+    #[must_use]
+    pub fn system_note(&self) -> String {
+        let mut notes: Vec<String> = self
+            .providers
+            .iter()
+            .filter_map(|provider| provider.system_note())
+            .collect();
+        notes.sort();
+        notes.iter().map(|note| format!("\n\n{note}")).collect()
     }
 
     #[must_use]

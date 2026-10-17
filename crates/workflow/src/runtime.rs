@@ -620,6 +620,19 @@ impl Runner {
                 worktree: self.host.worktree().to_string_lossy().into_owned(),
             })
             .await?;
+        for (id, node) in &shared.workflow.spec().nodes {
+            if let NodeSpec::Agent(agent) = node {
+                shared
+                    .host
+                    .extensions()
+                    .skills
+                    .select(&agent.skills)
+                    .map_err(|source| RunError::Skill {
+                        node: id.clone(),
+                        source,
+                    })?;
+            }
+        }
         let mut base_branch = None;
         if shared.workflow.needs_repository() {
             let isolation = shared.isolation()?;

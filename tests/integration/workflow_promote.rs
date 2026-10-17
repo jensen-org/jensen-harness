@@ -55,6 +55,12 @@ impl Host for RepoHost {
         Err(jensen_harness_promote::PromoteError::UnknownForge(remote_url.to_owned()).into())
     }
 
+    fn extensions(&self) -> &jensen_harness_extensions::Extensions {
+        static NONE: std::sync::OnceLock<jensen_harness_extensions::Extensions> =
+            std::sync::OnceLock::new();
+        NONE.get_or_init(jensen_harness_extensions::Extensions::default)
+    }
+
     fn budget(&self) -> &BudgetSettings {
         &self.budget
     }

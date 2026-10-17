@@ -5,6 +5,7 @@ use jensen_harness_core::store::StoreError;
 use jensen_harness_core::toolset::ToolSetError;
 use thiserror::Error;
 
+use jensen_harness_extensions::SkillError;
 use jensen_harness_promote::PromoteError;
 
 use crate::state::StateError;
@@ -28,6 +29,8 @@ pub enum RunError {
     Provider(#[from] ProviderError),
     #[error(transparent)]
     Promote(#[from] PromoteError),
+    #[error("node `{node}`: {source}")]
+    Skill { node: String, source: SkillError },
     #[error("this workflow has writer or promote nodes and needs a git repository to isolate them")]
     NeedsRepository,
     #[error("no model is bound to role `{0}`")]

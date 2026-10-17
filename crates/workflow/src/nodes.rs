@@ -12,6 +12,7 @@ use jensen_harness_core::store::{
     EventKind, LedgerError, NewEvent, NewScope, ScopeKind, Store, StoreError,
 };
 use jensen_harness_core::toolset::Access;
+use jensen_harness_extensions::SkillProvider;
 use jensen_harness_promote::forge::open_request;
 use jensen_harness_promote::push::push;
 use jensen_harness_promote::{Finding, GateConfig, Gates, PromoteError, Provenance};
@@ -313,7 +314,19 @@ async fn run_agent(
         ToolAccess::ReadOnly => Access::ReadOnly,
         ToolAccess::Writer => Access::ReadWrite,
     };
-    let tools = shared.tools_for(id, access)?;
+    let mut tools = shared.tools_for(id, access)?;
+    if !node.skills.is_empty() {
+        let skills = shared
+            .host
+            .extensions()
+            .skills
+            .select(&node.skills)
+            .map_err(|source| RunError::Skill {
+                node: id.to_owned(),
+                source,
+            })?;
+        tools = tools.with_provider(Arc::new(SkillProvider::new(skills)));
+    }
     let provider: Arc<dyn Provider> = Arc::clone(&binding.provider);
     let stop = match Recovered::load(&shared.store, &session_id).await {
         Ok(recovered) => {

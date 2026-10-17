@@ -58,6 +58,12 @@ impl Host for ForgeHost {
         Ok(self.target.clone())
     }
 
+    fn extensions(&self) -> &jensen_harness_extensions::Extensions {
+        static NONE: std::sync::OnceLock<jensen_harness_extensions::Extensions> =
+            std::sync::OnceLock::new();
+        NONE.get_or_init(jensen_harness_extensions::Extensions::default)
+    }
+
     fn budget(&self) -> &BudgetSettings {
         &self.budget
     }

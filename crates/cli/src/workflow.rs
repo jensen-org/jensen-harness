@@ -4,6 +4,7 @@ use std::sync::Arc;
 use jensen_harness_core::budget::BudgetSettings;
 use jensen_harness_core::budget::Caps;
 use jensen_harness_core::toolset::{Access, ToolSet};
+use jensen_harness_extensions::{Extensions, SkillCatalog};
 use jensen_harness_promote::Isolation;
 use jensen_harness_promote::forge::ForgeTarget;
 use jensen_harness_protocol::{
@@ -23,6 +24,7 @@ struct EngineHost {
     engine: Arc<Engine>,
     worktree: PathBuf,
     isolation: Option<Isolation>,
+    extensions: Extensions,
 }
 
 impl Host for EngineHost {
@@ -52,6 +54,10 @@ impl Host for EngineHost {
         self.engine.models.forge_target(remote_url)
     }
 
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+
     fn worktree(&self) -> &Path {
         &self.worktree
     }
@@ -61,16 +67,30 @@ impl Host for EngineHost {
     }
 }
 
-fn runner(engine: &Arc<Engine>, worktree: PathBuf) -> Runner {
-    Runner {
+fn skill_roots(engine: &Engine, worktree: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![worktree.join("skills")];
+    roots.extend(dirs::config_dir().map(|base| base.join("jensen-harness").join("skills")));
+    roots.extend(engine.library.iter().map(|dir| dir.join("skills")));
+    roots
+}
+
+fn runner(engine: &Arc<Engine>, worktree: PathBuf) -> Result<Runner, RunError> {
+    let skills = SkillCatalog::discover(&skill_roots(engine, &worktree)).map_err(|source| {
+        RunError::Skill {
+            node: String::new(),
+            source,
+        }
+    })?;
+    Ok(Runner {
         store: engine.store.clone(),
         host: Arc::new(EngineHost {
             engine: Arc::clone(engine),
             isolation: Isolation::open(&worktree, &engine.workspaces).ok(),
+            extensions: Extensions { skills },
             worktree,
         }),
         checkpoints: Arc::clone(&engine.checkpoints),
-    }
+    })
 }
 
 fn status_of(status: RunStatus) -> WorkflowStatus {
@@ -164,17 +184,22 @@ pub async fn workflow_start(
         Ok(token) => token,
         Err(message) => return invalid_params(id, message),
     };
-    let result = runner(engine, worktree)
-        .start(
-            workflow,
-            StartRequest {
-                run_id: run_id.clone(),
-                inputs: params.inputs.into_iter().collect(),
-                caps,
-            },
-            token,
-        )
-        .await;
+    let result = match runner(engine, worktree) {
+        Ok(runner) => {
+            runner
+                .start(
+                    workflow,
+                    StartRequest {
+                        run_id: run_id.clone(),
+                        inputs: params.inputs.into_iter().collect(),
+                        caps,
+                    },
+                    token,
+                )
+                .await
+        }
+        Err(error) => Err(error),
+    };
     engine.active_workflows.lock().await.remove(&run_id);
     match result {
         Ok(report) => run_response(id, report),
@@ -198,10 +223,11 @@ pub async fn workflow_status(
         }
         Err(error) => return internal(id, error.to_string()),
     };
-    match runner(engine, PathBuf::from(record.worktree))
-        .status(&params.run_id)
-        .await
-    {
+    let built = match runner(engine, PathBuf::from(record.worktree)) {
+        Ok(runner) => runner,
+        Err(error) => return run_error(id, &error),
+    };
+    match built.status(&params.run_id).await {
         Ok((spec_hash, status)) => Response::ok(
             id,
             json!(WorkflowStatusResult {
@@ -234,9 +260,10 @@ pub async fn workflow_resume(
         Ok(token) => token,
         Err(message) => return invalid_params(id, message),
     };
-    let result = runner(engine, PathBuf::from(record.worktree))
-        .resume_recorded(&params.run_id, token)
-        .await;
+    let result = match runner(engine, PathBuf::from(record.worktree)) {
+        Ok(runner) => runner.resume_recorded(&params.run_id, token).await,
+        Err(error) => Err(error),
+    };
     engine.active_workflows.lock().await.remove(&params.run_id);
     match result {
         Ok(report) => run_response(id, report),

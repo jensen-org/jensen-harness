@@ -360,7 +360,7 @@ impl Session {
             }
             let request = CompletionRequest {
                 model: self.model.clone(),
-                system: SYSTEM_PROMPT.to_string(),
+                system: format!("{SYSTEM_PROMPT}{}", self.tools.system_note()),
                 turns: self.turns.clone(),
                 tools: self.tools.specs(),
             };
