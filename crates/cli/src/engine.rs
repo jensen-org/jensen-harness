@@ -95,13 +95,28 @@ impl Engine {
         provider: Arc<dyn Provider>,
         model: impl Into<String>,
     ) -> Result<Self, StoreError> {
-        Ok(Self::new(
+        Ok(Self::with_fixed_model_on(
+            provider,
+            model,
+            Store::in_memory()?,
+        ))
+    }
+
+    /// Like [`Engine::with_fixed_model`] over an existing store, so a second
+    /// engine over the same store stands in for a restarted daemon.
+    #[must_use]
+    pub fn with_fixed_model_on(
+        provider: Arc<dyn Provider>,
+        model: impl Into<String>,
+        store: Store,
+    ) -> Self {
+        Self::new(
             Box::new(FixedModel {
                 provider,
                 model: model.into(),
             }),
-            Store::in_memory()?,
+            store,
             BudgetSettings::default(),
-        ))
+        )
     }
 }

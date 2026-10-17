@@ -51,7 +51,7 @@ impl Compacted {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Savings {
     pub raw_tokens: usize,
     pub sent_tokens: usize,

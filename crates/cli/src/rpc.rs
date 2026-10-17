@@ -6,13 +6,15 @@
 use std::sync::Arc;
 
 use jensen_harness_core::agent::{
-    AgentError, DEFAULT_MAX_TURNS, PromptOutcome, PromptStop, Session, SessionConfig,
+    AgentError, DEFAULT_MAX_TURNS, PromptOutcome, PromptStop, Recovered, Session, SessionConfig,
 };
+use jensen_harness_core::budget::{Caps, DEFAULT_SOFT_PERCENT};
+use jensen_harness_core::store::{LedgerError, NewScope, ScopeKind, StoreError};
 use jensen_harness_core::toolset::ToolSet;
 use jensen_harness_protocol::{
-    Frame, Request, RequestId, Response, ResponseError, Savings, SessionNewParams,
-    SessionNewResult, SessionPromptParams, SessionPromptResult, StopReason, Usage, classify,
-    error_code,
+    BudgetParams, Frame, Request, RequestId, Response, ResponseError, RunNewParams, RunNewResult,
+    Savings, SessionNewParams, SessionNewResult, SessionPromptParams, SessionPromptResult,
+    SessionResumeParams, StopReason, Usage, classify, error_code,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
@@ -64,8 +66,10 @@ where
 
 async fn dispatch(engine: &Engine, request: Request) -> Response {
     match request.method.as_str() {
+        "run.new" => run_new(engine, request.id, request.params).await,
         "session.new" => session_new(engine, request.id, request.params).await,
         "session.prompt" => session_prompt(engine, request.id, request.params).await,
+        "session.resume" => session_resume(engine, request.id, request.params).await,
         other => Response::err(
             request.id,
             ResponseError::new(
@@ -80,12 +84,67 @@ fn invalid_params(id: RequestId, message: impl Into<String>) -> Response {
     Response::err(id, ResponseError::new(error_code::INVALID_PARAMS, message))
 }
 
+fn internal(id: RequestId, message: impl Into<String>) -> Response {
+    Response::err(id, ResponseError::internal(message))
+}
+
 fn parse_params<T: serde::de::DeserializeOwned>(
     method: &str,
     params: Option<Value>,
 ) -> Result<T, String> {
     let params = params.ok_or_else(|| format!("{method} needs params"))?;
     serde_json::from_value(params).map_err(|error| error.to_string())
+}
+
+fn caps_of(budget: Option<BudgetParams>) -> Option<Caps> {
+    budget.map(|budget| Caps {
+        max_tokens: budget.max_tokens,
+        max_cost_micro_usd: budget.max_cost_micro_usd,
+    })
+}
+
+/// What the client did wrong versus what the harness could not do.
+fn agent_error(id: RequestId, error: &AgentError) -> Response {
+    match error {
+        AgentError::PromptOpen | AgentError::NothingToResume | AgentError::UnknownSession(_) => {
+            invalid_params(id, error.to_string())
+        }
+        AgentError::Store(StoreError::Ledger(
+            LedgerError::UnknownScope(_) | LedgerError::ScopeExists(_),
+        )) => invalid_params(id, error.to_string()),
+        AgentError::Provider(_) => internal(id, format!("provider: {error}")),
+        AgentError::Tool(_) => internal(id, format!("tool: {error}")),
+        AgentError::Store(_) | AgentError::Budget(_) | AgentError::Journal(_) => {
+            internal(id, format!("state: {error}"))
+        }
+    }
+}
+
+async fn run_new(engine: &Engine, id: RequestId, params: Option<Value>) -> Response {
+    let params: RunNewParams = if params.is_none() {
+        RunNewParams::default()
+    } else {
+        match parse_params("run.new", params) {
+            Ok(params) => params,
+            Err(message) => return invalid_params(id, message),
+        }
+    };
+    let caps = match caps_of(params.budget).unwrap_or_default().validated() {
+        Ok(caps) => caps,
+        Err(error) => return invalid_params(id, error.to_string()),
+    };
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let scope = NewScope {
+        id: run_id.clone(),
+        parent_id: None,
+        kind: ScopeKind::Run,
+        caps,
+        soft_percent: engine.budget.soft_percent.unwrap_or(DEFAULT_SOFT_PERCENT),
+    };
+    match engine.store.open_scope(scope).await {
+        Ok(()) => Response::ok(id, json!(RunNewResult { run_id })),
+        Err(error) => internal(id, format!("state: {error}")),
+    }
 }
 
 async fn session_new(engine: &Engine, id: RequestId, params: Option<Value>) -> Response {
@@ -100,7 +159,10 @@ async fn session_new(engine: &Engine, id: RequestId, params: Option<Value>) -> R
         Ok(resolved) => resolved,
         Err(error) => return invalid_params(id, error.to_string()),
     };
-    let budget = match engine.budget.resolve(None, &resolved.address) {
+    let budget = match engine
+        .budget
+        .resolve(caps_of(params.budget), &resolved.address)
+    {
         Ok(budget) => budget,
         Err(error) => return invalid_params(id, error.to_string()),
     };
@@ -113,7 +175,7 @@ async fn session_new(engine: &Engine, id: RequestId, params: Option<Value>) -> R
     let session_id = uuid::Uuid::new_v4().to_string();
     let config = SessionConfig {
         session_id: session_id.clone(),
-        run_id: None,
+        run_id: params.run_id,
         model_address: resolved.address,
         max_turns: params.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
         budget,
@@ -121,7 +183,7 @@ async fn session_new(engine: &Engine, id: RequestId, params: Option<Value>) -> R
     };
     let session = match Session::create(engine.store.clone(), config, tools).await {
         Ok(session) => session,
-        Err(error) => return Response::err(id, ResponseError::internal(error.to_string())),
+        Err(error) => return agent_error(id, &error),
     };
     engine.sessions.lock().await.insert(
         session_id.clone(),
@@ -164,35 +226,77 @@ fn prompt_result(
     })
 }
 
+/// The live session for an id. One the daemon does not hold is rebuilt from
+/// the journal, so sessions survive a restart.
+async fn live_session(
+    engine: &Engine,
+    id: &RequestId,
+    session_id: &str,
+) -> Result<Arc<tokio::sync::Mutex<LiveSession>>, Response> {
+    let mut sessions = engine.sessions.lock().await;
+    if let Some(live) = sessions.get(session_id) {
+        return Ok(Arc::clone(live));
+    }
+    let recovered = Recovered::load(&engine.store, session_id)
+        .await
+        .map_err(|error| agent_error(id.clone(), &error))?;
+    let resolved = engine
+        .models
+        .resolve(Some(&recovered.config.model_address))
+        .map_err(|error| internal(id.clone(), format!("model: {error}")))?;
+    let tools = ToolSet::for_worktree(&recovered.worktree).map_err(|error| {
+        internal(
+            id.clone(),
+            format!("worktree {}: {error}", recovered.worktree.display()),
+        )
+    })?;
+    let session = Session::restore(engine.store.clone(), recovered, tools)
+        .await
+        .map_err(|error| agent_error(id.clone(), &error))?;
+    let live = Arc::new(tokio::sync::Mutex::new(LiveSession {
+        provider: resolved.provider,
+        session,
+    }));
+    sessions.insert(session_id.to_string(), Arc::clone(&live));
+    Ok(live)
+}
+
+fn outcome_response(id: RequestId, result: Result<PromptOutcome, AgentError>) -> Response {
+    match result {
+        Ok(outcome) => match prompt_result(&outcome) {
+            Ok(result) => Response::ok(id, json!(result)),
+            Err(error) => internal(id, error.to_string()),
+        },
+        Err(error) => agent_error(id, &error),
+    }
+}
+
 async fn session_prompt(engine: &Engine, id: RequestId, params: Option<Value>) -> Response {
     let params: SessionPromptParams = match parse_params("session.prompt", params) {
         Ok(params) => params,
         Err(message) => return invalid_params(id, message),
     };
-    let live = engine
-        .sessions
-        .lock()
-        .await
-        .get(&params.session_id)
-        .cloned();
-    let Some(live) = live else {
-        return invalid_params(id, format!("no such session: {}", params.session_id));
+    let live = match live_session(engine, &id, &params.session_id).await {
+        Ok(live) => live,
+        Err(response) => return response,
     };
     let mut live = live.lock().await;
     let LiveSession { provider, session } = &mut *live;
-    match session.prompt(provider.as_ref(), &params.message).await {
-        Ok(outcome) => match prompt_result(&outcome) {
-            Ok(result) => Response::ok(id, json!(result)),
-            Err(error) => Response::err(id, ResponseError::internal(error.to_string())),
-        },
-        Err(error @ AgentError::Provider(_)) => {
-            Response::err(id, ResponseError::internal(format!("provider: {error}")))
-        }
-        Err(error @ AgentError::Tool(_)) => {
-            Response::err(id, ResponseError::internal(format!("tool: {error}")))
-        }
-        Err(error @ (AgentError::Store(_) | AgentError::Budget(_))) => {
-            Response::err(id, ResponseError::internal(format!("state: {error}")))
-        }
-    }
+    let result = session.prompt(provider.as_ref(), &params.message).await;
+    outcome_response(id, result)
+}
+
+async fn session_resume(engine: &Engine, id: RequestId, params: Option<Value>) -> Response {
+    let params: SessionResumeParams = match parse_params("session.resume", params) {
+        Ok(params) => params,
+        Err(message) => return invalid_params(id, message),
+    };
+    let live = match live_session(engine, &id, &params.session_id).await {
+        Ok(live) => live,
+        Err(response) => return response,
+    };
+    let mut live = live.lock().await;
+    let LiveSession { provider, session } = &mut *live;
+    let result = session.resume(provider.as_ref()).await;
+    outcome_response(id, result)
 }
