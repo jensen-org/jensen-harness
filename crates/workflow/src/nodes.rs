@@ -191,6 +191,9 @@ async fn run_kind(
         NodeSpec::Verifier(verifier) => run_verifier(shared, id, verifier, inputs).await,
         NodeSpec::Router(router) => run_router(id, router, inputs),
         NodeSpec::Loop(looped) => Box::pin(run_loop(shared, id, looped, inputs)).await,
+        NodeSpec::Promote(_) | NodeSpec::Publish(_) => Err(RunError::Engine(format!(
+            "node `{id}` needs an isolated repository, which this host does not provide"
+        ))),
     }
 }
 

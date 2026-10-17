@@ -158,3 +158,67 @@ fn unknown_references_are_refused() {
         matches!(refuse(&channel), SpecError::UnknownChannel { channel, .. } if channel == "ghost")
     );
 }
+
+const IMPLEMENT: &str = include_str!("../../workflows/examples/implement.yaml");
+
+fn implement_with(from: &str, to: &str) -> String {
+    IMPLEMENT.replacen(from, to, 1)
+}
+
+#[test]
+fn the_implement_example_loads_in_four_waves() {
+    let workflow = load(IMPLEMENT).expect("example loads");
+    assert_eq!(workflow.waves().len(), 4);
+}
+
+#[test]
+fn promotion_rules_are_enforced() {
+    let read_only = implement_with("    tools: writer\n", "");
+    assert!(matches!(
+        refuse(&read_only),
+        SpecError::PromoteSource { node, .. } if node == "promote"
+    ));
+
+    let unverified = implement_with("requires: [checked]", "requires: [task]");
+    assert!(matches!(
+        refuse(&unverified),
+        SpecError::RequiresNotVerified { channel, .. } if channel == "task"
+    ));
+
+    let ghost = implement_with("from: write", "from: ghost");
+    assert!(matches!(refuse(&ghost), SpecError::PromoteSource { .. }));
+
+    let duplicate = IMPLEMENT.replace(
+        "  publish:",
+        "  promote_again:\n    kind: promote\n    from: write\n    requires: [checked]\n  publish:",
+    )
+    .replace(
+        "  - { from: promote, to: publish }",
+        "  - { from: promote, to: promote_again }\n  - { from: promote_again, to: publish }",
+    );
+    assert!(matches!(
+        refuse(&duplicate),
+        SpecError::DuplicatePromote { writer, .. } if writer == "write"
+    ));
+
+    let unpromoted = "version: 1\nname: x\nnodes:\n  w: {kind: agent, role: r, prompt: p, tools: writer, max_turns: 3}\n";
+    assert!(matches!(
+        refuse(unpromoted),
+        SpecError::UnpromotedWriter { writer } if writer == "w"
+    ));
+}
+
+#[test]
+fn publish_rules_are_enforced() {
+    let not_promote = implement_with("    from: promote\n", "    from: check\n");
+    assert!(matches!(
+        refuse(&not_promote),
+        SpecError::PublishSource { node, .. } if node == "publish"
+    ));
+
+    let bypass = format!("{IMPLEMENT}  - {{ from: check, to: publish }}\n");
+    assert!(matches!(
+        refuse(&bypass),
+        SpecError::PublishSource { reason, .. } if reason.contains("without passing")
+    ));
+}

@@ -130,6 +130,33 @@ pub struct LoopNode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromoteNode {
+    pub from: String,
+    #[serde(default)]
+    pub requires: Vec<String>,
+    #[serde(default)]
+    pub protected: Vec<String>,
+    pub max_changed_files: Option<usize>,
+    pub max_added_bytes: Option<u64>,
+    #[serde(default)]
+    pub allow_binary: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PublishNode {
+    pub from: String,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NodeSpec {
     Agent(AgentNode),
@@ -137,6 +164,8 @@ pub enum NodeSpec {
     Verifier(VerifierNode),
     Router(RouterNode),
     Loop(LoopNode),
+    Promote(PromoteNode),
+    Publish(PublishNode),
 }
 
 impl NodeSpec {
@@ -148,6 +177,8 @@ impl NodeSpec {
             Self::Verifier(_) => "verifier",
             Self::Router(_) => "router",
             Self::Loop(_) => "loop",
+            Self::Promote(_) => "promote",
+            Self::Publish(_) => "publish",
         }
     }
 
@@ -158,7 +189,8 @@ impl NodeSpec {
             Self::Command(node) => &node.reads,
             Self::Verifier(node) => &node.reads,
             Self::Router(node) => &node.reads,
-            Self::Loop(_) => &[],
+            Self::Loop(_) | Self::Publish(_) => &[],
+            Self::Promote(node) => &node.requires,
         }
     }
     #[must_use]
@@ -173,6 +205,8 @@ impl NodeSpec {
                 .collect(),
             Self::Verifier(node) => vec![node.passes.clone()],
             Self::Router(_) | Self::Loop(_) => Vec::new(),
+            Self::Promote(node) => node.output.iter().cloned().collect(),
+            Self::Publish(node) => node.output.iter().cloned().collect(),
         }
     }
 }

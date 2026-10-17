@@ -1,0 +1,35 @@
+version: 1
+name: implement
+description: A writer makes the change, a verifier checks it, and the work is promoted and published.
+channels:
+  task: { schema: { type: string }, init: "" }
+  checked: { schema: { type: boolean }, verified: true }
+  promoted: { schema: { type: object } }
+  published: { schema: { type: object } }
+nodes:
+  write:
+    kind: agent
+    role: implement
+    prompt: Make the change the task describes, using the tools.
+    reads: [task]
+    tools: writer
+    max_turns: 20
+  check:
+    kind: verifier
+    run: make check
+    pass_when: exit_code == 0
+    passes: checked
+  promote:
+    kind: promote
+    from: write
+    requires: [checked]
+    output: promoted
+  publish:
+    kind: publish
+    from: promote
+    title: Implement the task
+    output: published
+edges:
+  - { from: write, to: check }
+  - { from: check, to: promote }
+  - { from: promote, to: publish }

@@ -56,6 +56,28 @@ pub enum SpecError {
     VerifiedChannelWrite { node: String, channel: String },
     #[error("verifier `{node}` passes into `{channel}`, which is not a verified channel")]
     VerifierTarget { node: String, channel: String },
+    #[error("promote node `{node}` cannot take from `{from}`: {reason}")]
+    PromoteSource {
+        node: String,
+        from: String,
+        reason: String,
+    },
+    #[error("promote node `{node}` requires `{channel}`, which is not a verified channel")]
+    RequiresNotVerified { node: String, channel: String },
+    #[error("promote nodes `{first}` and `{second}` both promote `{writer}`")]
+    DuplicatePromote {
+        writer: String,
+        first: String,
+        second: String,
+    },
+    #[error("writer `{writer}` has no promote node, so its work could never be merged")]
+    UnpromotedWriter { writer: String },
+    #[error("publish node `{node}` cannot take from `{from}`: {reason}")]
+    PublishSource {
+        node: String,
+        from: String,
+        reason: String,
+    },
     #[error("loop `{loop_node}` body node `{node}` is not allowed: {reason}")]
     LoopBody {
         loop_node: String,
@@ -107,6 +129,7 @@ impl Workflow {
         })?;
         check_state_flow(&spec, &owners, &graph, &index)?;
         check_parallelism(&spec, &owners, &graph, &index)?;
+        check_promotion(&spec, &graph, &index)?;
         let waves = waves(&graph, &order);
         let hash = hash(&spec)?;
         Ok(Self {
@@ -300,7 +323,10 @@ fn check_expressions(spec: &WorkflowSpec) -> Result<(), SpecError> {
                 &node.until,
                 &["channels", "iteration"],
             )?,
-            NodeSpec::Agent(_) | NodeSpec::Command(_) => {}
+            NodeSpec::Agent(_)
+            | NodeSpec::Command(_)
+            | NodeSpec::Promote(_)
+            | NodeSpec::Publish(_) => {}
         }
     }
     for edge in &spec.edges {
@@ -413,6 +439,7 @@ fn is_writer_agent(spec: &WorkflowSpec, id: &str) -> bool {
     match spec.nodes.get(id) {
         Some(NodeSpec::Agent(agent)) => agent.tools == ToolAccess::Writer,
         Some(NodeSpec::Loop(body)) => body.body.iter().any(|member| is_writer_agent(spec, member)),
+        Some(NodeSpec::Promote(_) | NodeSpec::Publish(_)) => true,
         _ => false,
     }
 }
@@ -493,4 +520,114 @@ fn waves(graph: &DiGraph<String, ()>, order: &[NodeIndex]) -> Vec<Vec<String>> {
         wave.sort();
     }
     waves
+}
+
+fn holds_writer_agent(spec: &WorkflowSpec, id: &str) -> bool {
+    match spec.nodes.get(id) {
+        Some(NodeSpec::Agent(agent)) => agent.tools == ToolAccess::Writer,
+        Some(NodeSpec::Loop(body)) => body
+            .body
+            .iter()
+            .any(|member| holds_writer_agent(spec, member)),
+        _ => false,
+    }
+}
+
+fn check_promotion(
+    spec: &WorkflowSpec,
+    graph: &DiGraph<String, ()>,
+    index: &Index,
+) -> Result<(), SpecError> {
+    let mut promoted: BTreeMap<&str, &str> = BTreeMap::new();
+    for (id, node) in &spec.nodes {
+        let NodeSpec::Promote(promote) = node else {
+            continue;
+        };
+        let reject = |reason: &str| SpecError::PromoteSource {
+            node: id.clone(),
+            from: promote.from.clone(),
+            reason: reason.to_owned(),
+        };
+        if !index.contains_key(&promote.from) {
+            return Err(reject("it is not a node of the graph"));
+        }
+        if !holds_writer_agent(spec, &promote.from) {
+            return Err(reject("it is not a writer agent or a loop holding one"));
+        }
+        if !is_ancestor(graph, index, &promote.from, id) {
+            return Err(reject("it does not run before the promote node"));
+        }
+        for channel in &promote.requires {
+            if !spec.channels.get(channel).is_some_and(|c| c.verified) {
+                return Err(SpecError::RequiresNotVerified {
+                    node: id.clone(),
+                    channel: channel.clone(),
+                });
+            }
+        }
+        if let Some(first) = promoted.insert(&promote.from, id) {
+            return Err(SpecError::DuplicatePromote {
+                writer: promote.from.clone(),
+                first: first.to_owned(),
+                second: id.clone(),
+            });
+        }
+    }
+    for id in index.keys() {
+        if holds_writer_agent(spec, id) && !promoted.contains_key(id.as_str()) {
+            return Err(SpecError::UnpromotedWriter { writer: id.clone() });
+        }
+    }
+    for (id, node) in &spec.nodes {
+        let NodeSpec::Publish(publish) = node else {
+            continue;
+        };
+        let reject = |reason: &str| SpecError::PublishSource {
+            node: id.clone(),
+            from: publish.from.clone(),
+            reason: reason.to_owned(),
+        };
+        if !matches!(spec.nodes.get(&publish.from), Some(NodeSpec::Promote(_))) {
+            return Err(reject("it is not a promote node"));
+        }
+        if !is_ancestor(graph, index, &publish.from, id) {
+            return Err(reject("it does not run before the publish node"));
+        }
+        if reachable_without(graph, index, &publish.from, id) {
+            return Err(reject(
+                "a branch can reach the publish node without passing through it",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn reachable_without(
+    graph: &DiGraph<String, ()>,
+    index: &Index,
+    blocked: &str,
+    target: &str,
+) -> bool {
+    let (Some(blocked), Some(target)) = (index.get(blocked), index.get(target)) else {
+        return false;
+    };
+    let mut seen = BTreeSet::new();
+    let mut stack: Vec<NodeIndex> = graph
+        .externals(petgraph::Direction::Incoming)
+        .filter(|root| root != blocked)
+        .collect();
+    while let Some(node) = stack.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        if node == *target {
+            return true;
+        }
+        stack.extend(
+            graph
+                .neighbors_directed(node, petgraph::Direction::Outgoing)
+                .filter(|next| next != blocked),
+        );
+    }
+    false
 }
