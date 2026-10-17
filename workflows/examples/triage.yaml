@@ -1,0 +1,42 @@
+version: 1
+name: triage
+description: Read a report, check it, and route it.
+channels:
+  report:
+    schema: { type: string }
+    init: ""
+  findings:
+    schema: { type: array, items: { type: string } }
+    reducer: append
+  checked:
+    schema: { type: boolean }
+    verified: true
+nodes:
+  inspect_code:
+    kind: agent
+    role: explore
+    prompt: List what the report affects in the code.
+    reads: [report]
+    writes: [findings]
+    max_turns: 8
+  inspect_docs:
+    kind: agent
+    role: explore
+    prompt: List what the report affects in the docs.
+    reads: [report]
+    writes: [findings]
+    max_turns: 8
+  check:
+    kind: verifier
+    run: test -s README.md
+    reads: [findings]
+    pass_when: exit_code == 0
+    passes: checked
+  route:
+    kind: router
+    reads: [checked]
+    expr: 'channels.checked ? "ok" : "retry"'
+edges:
+  - { from: inspect_code, to: check }
+  - { from: inspect_docs, to: check }
+  - { from: check, to: route }

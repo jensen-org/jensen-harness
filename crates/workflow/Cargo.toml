@@ -1,0 +1,26 @@
+[package]
+name = "jensen-harness-workflow"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+blake3 = "1"
+cel = "0.15"
+dagrs = "0.9"
+jensen-harness-core = { version = "0.1.0", path = "../core" }
+jsonschema = "0.59"
+petgraph = { version = "0.8", features = ["serde-1"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde-saphyr = "2"
+serde_json = "1"
+thiserror = "2"
+
+[lints]
+workspace = true
