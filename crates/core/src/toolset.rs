@@ -138,10 +138,50 @@ pub trait ToolProvider: Send + Sync {
     async fn invoke(&self, name: &str, input: &Value) -> Result<ProviderReply, ToolSetError>;
 }
 
+#[derive(Clone)]
+pub struct Confiner {
+    sandbox: std::sync::Arc<dyn Sandbox>,
+    policy: SandboxPolicy,
+}
+
+impl Confiner {
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.policy.worktree
+    }
+
+    /// # Errors
+    /// [`ToolSetError::Sandbox`] when the policy cannot be applied.
+    pub fn confine(
+        &self,
+        program: &str,
+        args: &[String],
+        network: sandbox::NetworkPolicy,
+        writable: bool,
+    ) -> Result<(sandbox::Confined, PathBuf), ToolSetError> {
+        let mut policy = self.policy.clone();
+        policy.network = network;
+        if !writable {
+            policy.extra_rules.insert(
+                0,
+                sandbox::FsRule::new(policy.worktree.clone(), sandbox::FsMode::ReadOnly),
+            );
+        }
+        std::fs::create_dir_all(&policy.scratch)
+            .map_err(|error| ToolSetError::Infrastructure(error.to_string()))?;
+        let scratch = policy.scratch.clone();
+        let confined = self
+            .sandbox
+            .confine(&policy, program, args)
+            .map_err(|error| ToolSetError::Sandbox(error.to_string()))?;
+        Ok((confined, scratch))
+    }
+}
+
 pub struct ToolSet {
     providers: Vec<std::sync::Arc<dyn ToolProvider>>,
     worktree: Worktree,
-    sandbox: Box<dyn Sandbox>,
+    sandbox: std::sync::Arc<dyn Sandbox>,
     policy: SandboxPolicy,
     store: RawStore,
     shell_timeout: Duration,
@@ -212,11 +252,19 @@ impl ToolSet {
         Self {
             providers: Vec::new(),
             worktree,
-            sandbox,
+            sandbox: std::sync::Arc::from(sandbox),
             policy,
             store,
             shell_timeout: shell::DEFAULT_TIMEOUT,
             read_only: false,
+        }
+    }
+
+    #[must_use]
+    pub fn confiner(&self) -> Confiner {
+        Confiner {
+            sandbox: std::sync::Arc::clone(&self.sandbox),
+            policy: self.policy.clone(),
         }
     }
 
@@ -229,22 +277,27 @@ impl ToolSet {
         network: sandbox::NetworkPolicy,
         writable: bool,
     ) -> Result<(sandbox::Confined, PathBuf), ToolSetError> {
-        let mut policy = self.policy.clone();
-        policy.network = network;
-        if !writable {
-            policy.extra_rules.insert(
-                0,
-                sandbox::FsRule::new(policy.worktree.clone(), sandbox::FsMode::ReadOnly),
-            );
+        self.confiner().confine(program, args, network, writable)
+    }
+
+    /// # Errors
+    /// [`ToolSetError::Infrastructure`] when the provider has a tool whose
+    /// name is already taken by a built in tool or another provider.
+    pub fn attach(
+        &mut self,
+        provider: std::sync::Arc<dyn ToolProvider>,
+    ) -> Result<(), ToolSetError> {
+        let taken: Vec<String> = self.specs().into_iter().map(|spec| spec.name).collect();
+        for spec in provider.specs() {
+            if taken.contains(&spec.name) {
+                return Err(ToolSetError::Infrastructure(format!(
+                    "tool name `{}` is already taken",
+                    spec.name
+                )));
+            }
         }
-        std::fs::create_dir_all(&policy.scratch)
-            .map_err(|error| ToolSetError::Infrastructure(error.to_string()))?;
-        let scratch = policy.scratch.clone();
-        let confined = self
-            .sandbox
-            .confine(&policy, program, args)
-            .map_err(|error| ToolSetError::Sandbox(error.to_string()))?;
-        Ok((confined, scratch))
+        self.providers.push(provider);
+        Ok(())
     }
 
     #[must_use]

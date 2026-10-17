@@ -310,3 +310,21 @@ fn a_forge_must_be_github_or_gitlab_with_exactly_one_token_source() {
         Err(ProviderError::Config(_))
     ));
 }
+
+#[test]
+fn language_servers_are_declared_with_a_language_and_a_closed_network_by_default() {
+    let config = format!(
+        "{CONFIG}\n[lsp.servers.rust]\ncommand = \"rust-analyzer\"\nlanguage = \"rust\"\nenv_allow = [\"RUSTUP_HOME\"]\ntimeout_secs = 120\n"
+    );
+    let registry = ProviderRegistry::from_toml(&config).unwrap();
+    let server = registry.lsp_server("rust").unwrap();
+    assert_eq!(server.command, "rust-analyzer");
+    assert_eq!(server.language, "rust");
+    assert_eq!(server.timeout_secs, Some(120));
+    assert!(registry.lsp_server("go").is_none());
+    let missing = format!("{CONFIG}\n[lsp.servers.go]\ncommand = \"gopls\"\n");
+    assert!(
+        ProviderRegistry::from_toml(&missing).is_err(),
+        "a language is required"
+    );
+}

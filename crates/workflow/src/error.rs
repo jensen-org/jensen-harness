@@ -33,6 +33,8 @@ pub enum RunError {
     Skill { node: String, source: SkillError },
     #[error("node `{node}`: {source}")]
     Mcp { node: String, source: McpError },
+    #[error("node `{node}` could not gather its context: {message}")]
+    Context { node: String, message: String },
     #[error("this workflow has writer or promote nodes and needs a git repository to isolate them")]
     NeedsRepository,
     #[error("no model is bound to role `{0}`")]

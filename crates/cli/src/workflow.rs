@@ -4,7 +4,9 @@ use std::sync::Arc;
 use jensen_harness_core::budget::BudgetSettings;
 use jensen_harness_core::budget::Caps;
 use jensen_harness_core::toolset::{Access, ToolSet};
-use jensen_harness_extensions::{Extensions, McpDirectory, McpError, SkillCatalog};
+use jensen_harness_extensions::{
+    ConfiguredLsp, Extensions, LspError, LspSpecs, McpDirectory, McpError, SkillCatalog,
+};
 use jensen_harness_promote::Isolation;
 use jensen_harness_promote::forge::ForgeTarget;
 use jensen_harness_protocol::{
@@ -67,6 +69,14 @@ impl Host for EngineHost {
     }
 }
 
+struct EngineLsp(Arc<Engine>);
+
+impl LspSpecs for EngineLsp {
+    fn server(&self, name: &str) -> Result<jensen_harness_extensions::LspServerSpec, LspError> {
+        self.0.models.lsp_server(name)
+    }
+}
+
 struct EngineMcp(Arc<Engine>);
 
 impl McpDirectory for EngineMcp {
@@ -100,6 +110,9 @@ fn runner(engine: &Arc<Engine>, worktree: PathBuf) -> Result<Runner, RunError> {
             extensions: Extensions {
                 skills,
                 mcp: Some(Arc::new(EngineMcp(Arc::clone(engine)))),
+                lsp: Some(Arc::new(ConfiguredLsp::new(Arc::new(EngineLsp(
+                    Arc::clone(engine),
+                ))))),
             },
             worktree,
         }),

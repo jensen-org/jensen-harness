@@ -12,8 +12,11 @@ use jensen_harness_core::store::{
     EventKind, LedgerError, NewEvent, NewScope, ScopeKind, Store, StoreError,
 };
 use jensen_harness_core::toolset::Access;
+use jensen_harness_core::toolset::ToolProvider;
 use jensen_harness_extensions::mcp::connect as mcp_connect;
-use jensen_harness_extensions::{McpError, SkillProvider};
+use jensen_harness_extensions::{McpError, McpProvider, SkillProvider};
+
+use crate::context::{ContextEnv, eager_text, lazy_provider};
 use jensen_harness_promote::forge::open_request;
 use jensen_harness_promote::push::push;
 use jensen_harness_promote::{Finding, GateConfig, Gates, PromoteError, Provenance};
@@ -256,11 +259,26 @@ fn take_writes(
     Ok(outputs)
 }
 
-fn compose_prompt(shared: &Shared, node: &AgentNode, inputs: &Values) -> String {
+fn compose_prompt(shared: &Shared, node: &AgentNode, inputs: &Values, context: &str) -> String {
     let mut prompt = node.prompt.clone();
-    if !inputs.is_empty() {
+    let inherited: Vec<&str> = node
+        .context
+        .inherit
+        .iter()
+        .map(|spec| spec.channel.as_str())
+        .collect();
+    let plain: Values = inputs
+        .iter()
+        .filter(|(name, _)| !inherited.contains(&name.as_str()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    if !plain.is_empty() {
         prompt.push_str("\n\nInputs (JSON):\n");
-        prompt.push_str(&channels_variable(inputs).to_string());
+        prompt.push_str(&channels_variable(&plain).to_string());
+    }
+    if !context.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(context);
     }
     if !node.writes.is_empty() {
         prompt.push_str("\n\nReply with one JSON object and nothing else. Its keys are exactly these channels, each value matching its schema:");
@@ -326,8 +344,11 @@ async fn run_agent(
                 node: id.to_owned(),
                 source,
             })?;
-        tools = tools.with_provider(Arc::new(SkillProvider::new(skills)));
+        tools
+            .attach(Arc::new(SkillProvider::new(skills)))
+            .map_err(RunError::from)?;
     }
+    let mut servers: BTreeMap<String, Arc<McpProvider>> = BTreeMap::new();
     for (server, attach) in &node.mcp {
         let mcp_error = |source: McpError| RunError::Mcp {
             node: id.to_owned(),
@@ -340,10 +361,26 @@ async fn run_agent(
             .as_ref()
             .ok_or_else(|| mcp_error(McpError::Unknown(server.clone())))?;
         let spec = directory.server(server).map_err(mcp_error)?;
-        let connected = mcp_connect(&spec, &attach.tools, &tools)
-            .await
-            .map_err(mcp_error)?;
-        tools = tools.with_provider(Arc::new(connected));
+        let connected = Arc::new(
+            mcp_connect(&spec, &attach.tools, &tools)
+                .await
+                .map_err(mcp_error)?,
+        );
+        tools
+            .attach(connected.clone() as Arc<dyn ToolProvider>)
+            .map_err(RunError::from)?;
+        servers.insert(server.clone(), connected);
+    }
+    let extensions = shared.host.extensions();
+    let env = Arc::new(ContextEnv {
+        root: tools.root().to_path_buf(),
+        confiner: tools.confiner(),
+        skills: extensions.skills.clone(),
+        mcp: servers,
+        lsp: extensions.lsp.clone(),
+    });
+    if let Some(lazy) = lazy_provider(&env, node) {
+        tools.attach(Arc::new(lazy)).map_err(RunError::from)?;
     }
     let provider: Arc<dyn Provider> = Arc::clone(&binding.provider);
     let stop = match Recovered::load(&shared.store, &session_id).await {
@@ -359,7 +396,8 @@ async fn run_agent(
                     .map_err(agent_error)?;
                 (session, Some(outcome.stop))
             } else if session.turns().is_empty() {
-                let prompt = compose_prompt(shared, node, inputs);
+                let context = eager_text(shared, id, node, inputs, &env).await?;
+                let prompt = compose_prompt(shared, node, inputs, &context);
                 let outcome = session
                     .prompt(provider.as_ref(), &prompt)
                     .await
@@ -384,7 +422,8 @@ async fn run_agent(
             )
             .await
             .map_err(agent_error)?;
-            let prompt = compose_prompt(shared, node, inputs);
+            let context = eager_text(shared, id, node, inputs, &env).await?;
+            let prompt = compose_prompt(shared, node, inputs, &context);
             let outcome = session
                 .prompt(provider.as_ref(), &prompt)
                 .await

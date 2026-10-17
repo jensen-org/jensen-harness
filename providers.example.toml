@@ -63,6 +63,14 @@ url = "https://mcp.figma.com/mcp"
 network = "full"
 api_key_keychain = {}
 
+# Language servers answer `lsp` context sources (diagnostics, symbols,
+# references). Each query starts the server inside the node's OS sandbox,
+# read only, with the network closed, and stops it afterwards.
+[lsp.servers.rust]
+command = "rust-analyzer"
+language = "rust"
+timeout_secs = 120
+
 # Prices are integer micro dollars per million tokens. These are examples only:
 # copy the current numbers from your provider's price list and bump the version.
 [pricing]

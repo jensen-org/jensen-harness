@@ -19,6 +19,10 @@ thiserror = "2"
 tokio = { version = "1", features = ["process", "time", "rt-multi-thread"] }
 rmcp = { version = "3.5.1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 cap-std = "4"
+async-lsp = "0.2.4"
+tower = "0.5.3"
+tracing = "0.1.44"
+tokio-util = { version = "0.7.20", features = ["compat"] }
 
 [lints]
 workspace = true

@@ -25,7 +25,7 @@ fn stdio(env: Vec<(String, String)>) -> McpServerSpec {
             env,
         },
         network: NetworkPolicy::None,
-        writable: false,
+        writable: true,
         tools: Vec::new(),
         timeout: Duration::from_secs(20),
     }
@@ -135,6 +135,35 @@ async fn the_operator_and_the_node_allowlists_both_narrow_the_tools() {
     assert_eq!(names, ["mcp__fx__echo"]);
     let operator_only = connect(&spec, &[], &tools).await.unwrap();
     assert_eq!(operator_only.specs().len(), 2);
+}
+
+#[tokio::test]
+async fn read_only_access_hides_every_tool_that_may_change_things() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spec = stdio(Vec::new());
+    spec.writable = false;
+    let provider = connect(&spec, &[], &tool_set(dir.path())).await.unwrap();
+    let names: Vec<String> = provider.specs().iter().map(|s| s.name.clone()).collect();
+    assert_eq!(
+        names,
+        [
+            "mcp__fx__big",
+            "mcp__fx__echo",
+            "mcp__fx__env",
+            "mcp__fx__slow"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_tool_name_taken_by_another_provider_or_a_built_in_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tools = tool_set(dir.path());
+    let first = Arc::new(connect(&stdio(Vec::new()), &[], &tools).await.unwrap());
+    tools.attach(first).unwrap();
+    let again = Arc::new(connect(&stdio(Vec::new()), &[], &tools).await.unwrap());
+    let error = tools.attach(again).unwrap_err();
+    assert!(error.to_string().contains("already taken"), "{error}");
 }
 
 #[tokio::test]
@@ -413,6 +442,18 @@ api_key_env = "FIGMA_TOKEN"
     fn a_server_entry_must_be_a_command_or_a_url_and_a_command_takes_no_token() {
         for (extra, why) in [
             ("[mcp.servers.a]\n", "neither"),
+            (
+                "[mcp.servers.a__b]\ncommand = \"x\"\n",
+                "double underscore in a name",
+            ),
+            (
+                "[mcp.servers.\"a b\"]\ncommand = \"x\"\n",
+                "a space in a name",
+            ),
+            (
+                "[mcp.servers.a]\nurl = \"https://x\"\nnetwork = \"none\"\n",
+                "a url with the network closed",
+            ),
             (
                 "[mcp.servers.a]\ncommand = \"x\"\nurl = \"https://x\"\n",
                 "both",

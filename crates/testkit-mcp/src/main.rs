@@ -97,7 +97,36 @@ impl Fixture {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for Fixture {}
+impl ServerHandler for Fixture {
+    async fn list_resources(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourcesResult, ErrorData> {
+        Ok(rmcp::model::ListResourcesResult::default())
+    }
+
+    async fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
+        if request.uri == "note://design" {
+            Ok(
+                rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::text(
+                    "the design brief",
+                    request.uri,
+                )])
+                .into(),
+            )
+        } else {
+            Err(ErrorData::invalid_params(
+                format!("no resource {}", request.uri),
+                None,
+            ))
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

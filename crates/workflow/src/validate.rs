@@ -756,6 +756,15 @@ fn check_context(
                 return Err(bad("a fetch source is missing what to fetch (paths, globs, a name, or exactly one of resource and tool)".to_owned()));
             }
         }
+        for fetch in &agent.context.fetch {
+            if let FetchSource::Mcp { server, .. } = &fetch.source
+                && !agent.mcp.contains_key(server)
+            {
+                return Err(bad(format!(
+                    "a fetch source uses mcp server `{server}`, which the node does not attach"
+                )));
+            }
+        }
         for name in agent.skills.iter().chain(agent.mcp.keys()) {
             if name.is_empty() {
                 return Err(bad(

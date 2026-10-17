@@ -14,6 +14,8 @@ async-trait = "0.1"
 blake3 = "1"
 cel = "0.15"
 dagrs = "0.9"
+globset = "0.4.20"
+ignore = "0.4.33"
 jensen-harness-core = { version = "0.1.0", path = "../core" }
 jensen-harness-extensions = { path = "../extensions" }
 jensen-harness-promote = { path = "../promote" }

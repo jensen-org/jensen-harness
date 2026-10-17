@@ -166,7 +166,12 @@ pub async fn connect(
         let original = tool.name.to_string();
         let allowed = (spec.tools.is_empty() || spec.tools.contains(&original))
             && (node_allow.is_empty() || node_allow.contains(&original));
-        if !allowed {
+        let read_only = tool
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint)
+            == Some(true);
+        if !allowed || (!spec.writable && !read_only) {
             continue;
         }
         let exposed = exposed_name(server, &original);
@@ -188,11 +193,7 @@ pub async fn connect(
                 description: format!("[{server}] {description}"),
                 input_schema: Value::Object((*tool.input_schema).clone()),
             },
-            read_only: tool
-                .annotations
-                .as_ref()
-                .and_then(|annotations| annotations.read_only_hint)
-                == Some(true),
+            read_only,
             exposed,
             original,
         });
@@ -236,6 +237,56 @@ fn render(result: &rmcp::model::CallToolResult) -> String {
         parts.push(structured.to_string());
     }
     parts.join("\n")
+}
+
+impl McpProvider {
+    pub async fn fetch_resource(&self, uri: &str) -> Result<String, McpError> {
+        let read = tokio::time::timeout(
+            self.timeout,
+            self.client
+                .read_resource(rmcp::model::ReadResourceRequestParams::new(uri)),
+        )
+        .await
+        .map_err(|_| connect_error(&self.server, "no answer to a resource read in time"))?
+        .map_err(|error| connect_error(&self.server, error))?;
+        let mut parts: Vec<String> = Vec::new();
+        for content in read.contents {
+            match content {
+                rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
+                    parts.push(text)
+                }
+                _ => parts.push("[binary resource content left out]".to_owned()),
+            }
+        }
+        Ok(parts.join("\n"))
+    }
+
+    pub async fn fetch_tool(&self, original: &str, args: &Value) -> Result<String, McpError> {
+        let entry = self
+            .entries
+            .iter()
+            .find(|entry| entry.original == original)
+            .ok_or_else(|| McpError::Config {
+                server: self.server.clone(),
+                message: format!("no tool `{original}` is available"),
+            })?;
+        if !entry.read_only {
+            return Err(McpError::Config {
+                server: self.server.clone(),
+                message: format!(
+                    "tool `{original}` may change things and cannot be used to fetch context"
+                ),
+            });
+        }
+        let reply = self
+            .invoke(&entry.exposed, args)
+            .await
+            .map_err(|error| connect_error(&self.server, error))?;
+        if reply.is_error {
+            return Err(connect_error(&self.server, reply.text));
+        }
+        Ok(reply.text)
+    }
 }
 
 #[async_trait]

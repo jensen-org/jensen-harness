@@ -44,6 +44,7 @@ mod core_tools_glob;
 mod core_tools_grep;
 mod core_tools_read;
 mod core_tools_shell;
+mod ext_context;
 mod ext_host;
 mod ext_mcp;
 mod ext_skills;

@@ -93,6 +93,27 @@ pub struct McpServerEntry {
     pub api_key_keychain: Option<KeychainRef>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LspServerEntry {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env_allow: Vec<String>,
+    pub language: String,
+    #[serde(default)]
+    pub network: McpNetwork,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LspFile {
+    #[serde(default)]
+    servers: BTreeMap<String, LspServerEntry>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct McpFile {
@@ -130,6 +151,8 @@ struct ConfigFile {
     #[serde(default)]
     mcp: McpFile,
     #[serde(default)]
+    lsp: LspFile,
+    #[serde(default)]
     pricing: PricingTable,
     budget: Option<BudgetFile>,
 }
@@ -143,6 +166,7 @@ pub struct ProviderRegistry {
     library: Vec<std::path::PathBuf>,
     allow_project_skills: bool,
     mcp_servers: BTreeMap<String, McpServerEntry>,
+    lsp_servers: BTreeMap<String, LspServerEntry>,
     budget: BudgetSettings,
 }
 
@@ -228,6 +252,21 @@ impl ProviderRegistry {
             }
         }
         for (name, entry) in &file.mcp.servers {
+            let plain = !name.is_empty()
+                && !name.contains("__")
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+            if !plain {
+                return Err(ProviderError::Config(format!(
+                    "mcp server name {name:?} must be letters, digits, dashes and single underscores"
+                )));
+            }
+            if entry.url.is_some() && entry.network == McpNetwork::None {
+                return Err(ProviderError::Config(format!(
+                    "mcp server {name} is reached over the network; network = \"none\" contradicts its url"
+                )));
+            }
             if entry.command.is_some() == entry.url.is_some() {
                 return Err(ProviderError::Config(format!(
                     "mcp server {name} needs exactly one of command and url"
@@ -267,6 +306,7 @@ impl ProviderRegistry {
             library: file.library.paths,
             allow_project_skills: file.skills.allow_project,
             mcp_servers: file.mcp.servers,
+            lsp_servers: file.lsp.servers,
             budget,
         })
     }
@@ -352,6 +392,11 @@ impl ProviderRegistry {
                 .clone()
                 .unwrap_or_else(|| provider_id.to_string()),
         ))
+    }
+
+    #[must_use]
+    pub fn lsp_server(&self, name: &str) -> Option<&LspServerEntry> {
+        self.lsp_servers.get(name)
     }
 
     #[must_use]

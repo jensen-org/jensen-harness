@@ -138,7 +138,6 @@ pub enum TreeView {
 pub enum LspQuery {
     Diagnostics,
     Symbols,
-    Definition,
     References,
 }
 

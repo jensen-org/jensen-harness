@@ -9,7 +9,9 @@ use jensen_harness_core::providers::{Provider, ProviderError};
 use jensen_harness_core::sandbox::NetworkPolicy;
 use jensen_harness_core::secrets::SecretSource;
 use jensen_harness_core::store::{Store, StoreError};
-use jensen_harness_extensions::{McpError, McpServerSpec, McpTransportSpec, Secret as McpSecret};
+use jensen_harness_extensions::{
+    LspError, LspServerSpec, McpError, McpServerSpec, McpTransportSpec, Secret as McpSecret,
+};
 use jensen_harness_promote::PromoteError;
 use jensen_harness_promote::forge::{ForgeKind, ForgeTarget, Secret, parse_remote};
 use jensen_harness_workflow::{CancellationToken, MemoryRunStore, RunError, RunStore};
@@ -34,6 +36,8 @@ pub trait ModelSource: Send + Sync {
     fn forge_target(&self, remote_url: &str) -> Result<ForgeTarget, RunError>;
 
     fn mcp_server(&self, name: &str) -> Result<McpServerSpec, McpError>;
+
+    fn lsp_server(&self, name: &str) -> Result<LspServerSpec, LspError>;
 }
 
 /// One provider and model for every session.
@@ -43,6 +47,10 @@ pub struct FixedModel {
 }
 
 impl ModelSource for FixedModel {
+    fn lsp_server(&self, name: &str) -> Result<LspServerSpec, LspError> {
+        Err(LspError::Unknown(name.to_owned()))
+    }
+
     fn mcp_server(&self, name: &str) -> Result<McpServerSpec, McpError> {
         Err(McpError::Unknown(name.to_owned()))
     }
@@ -71,6 +79,31 @@ pub struct ConfiguredModels {
 }
 
 impl ModelSource for ConfiguredModels {
+    fn lsp_server(&self, name: &str) -> Result<LspServerSpec, LspError> {
+        let entry = self
+            .registry
+            .lsp_server(name)
+            .ok_or_else(|| LspError::Unknown(name.to_owned()))?;
+        Ok(LspServerSpec {
+            name: name.to_owned(),
+            command: entry.command.clone(),
+            args: entry.args.clone(),
+            env: entry
+                .env_allow
+                .iter()
+                .filter_map(|key| self.secrets.env(key).map(|value| (key.clone(), value)))
+                .collect(),
+            language: entry.language.clone(),
+            network: match entry.network {
+                McpNetwork::None => NetworkPolicy::None,
+                McpNetwork::Full => NetworkPolicy::Full,
+            },
+            timeout: entry
+                .timeout_secs
+                .map_or(Duration::from_secs(60), Duration::from_secs),
+        })
+    }
+
     fn mcp_server(&self, name: &str) -> Result<McpServerSpec, McpError> {
         let entry = self
             .registry
