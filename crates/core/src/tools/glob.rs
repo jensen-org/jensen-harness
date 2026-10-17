@@ -1,29 +1,51 @@
-use std::path::Path;
+use globset::GlobBuilder;
+use ignore::WalkBuilder;
 
-use super::ToolError;
-use crate::sandbox::is_within;
+use super::{ToolError, Worktree};
 
-/// Lists paths under `worktree` matching `pattern`, relative to the
-/// worktree, sorted. Any match the glob library resolves outside the
-/// worktree (a symlink climbing out, for instance) is dropped rather than
-/// returned, since this tool never reports a path it would not also let a
-/// caller read.
+pub(crate) fn walker(root: &std::path::Path) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .follow_links(false)
+        .hidden(false)
+        .parents(false)
+        .git_global(false)
+        .git_exclude(false)
+        .require_git(false)
+        .sort_by_file_path(Ord::cmp)
+        .filter_entry(|entry| entry.file_name() != ".git");
+    builder
+}
+
+/// Lists the files under the worktree matching `pattern`, relative to it and
+/// sorted. `*` stays within one directory and `**` crosses them. The walk
+/// honors `.gitignore`, never follows a symlink, and drops any symlink that
+/// does not resolve to somewhere inside the worktree.
 ///
 /// # Errors
-/// [`ToolError::Io`] if `pattern` is not a valid glob.
-pub fn run(worktree: &Path, pattern: &str) -> Result<Vec<String>, ToolError> {
-    let joined = worktree.join(pattern);
-    let full_pattern = joined.to_string_lossy().into_owned();
-    let mut matches: Vec<String> = ::glob::glob(&full_pattern)
+/// [`ToolError::Io`] if `pattern` is not a valid glob or the walk fails.
+pub fn run(worktree: &Worktree, pattern: &str) -> Result<Vec<String>, ToolError> {
+    let matcher = GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .build()
         .map_err(|error| ToolError::Io(error.to_string()))?
-        .filter_map(Result::ok)
-        .filter(|path| is_within(worktree, path))
-        .filter_map(|path| {
-            path.strip_prefix(worktree)
-                .ok()
-                .map(|p| p.to_string_lossy().into_owned())
-        })
-        .collect();
-    matches.sort();
+        .compile_matcher();
+    let mut matches = Vec::new();
+    for entry in walker(worktree.root()).build() {
+        let entry = entry.map_err(|error| ToolError::Io(error.to_string()))?;
+        let Ok(relative) = entry.path().strip_prefix(worktree.root()) else {
+            continue;
+        };
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() || !matcher.is_match(relative) {
+            continue;
+        }
+        if file_type.is_symlink() && worktree.dir.canonicalize(relative).is_err() {
+            continue;
+        }
+        matches.push(relative.to_string_lossy().into_owned());
+    }
     Ok(matches)
 }

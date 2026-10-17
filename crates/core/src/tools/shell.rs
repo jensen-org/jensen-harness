@@ -21,6 +21,9 @@ pub async fn run(
     policy: &SandboxPolicy,
     command: &str,
 ) -> Result<ShellResult, ToolError> {
+    tokio::fs::create_dir_all(&policy.scratch)
+        .await
+        .map_err(|error| ToolError::Io(error.to_string()))?;
     let confined = sandbox
         .confine(policy, "/bin/sh", &["-c".to_string(), command.to_string()])
         .map_err(|error| ToolError::Sandbox(error.to_string()))?;

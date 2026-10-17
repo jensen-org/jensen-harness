@@ -48,3 +48,21 @@ async fn the_cleared_environment_still_has_a_usable_path() {
         "a trivial command must still run with the allowlisted env"
     );
 }
+
+#[tokio::test]
+async fn the_scratch_directory_exists_and_is_writable_for_the_command() {
+    let worktree = tempfile::tempdir().unwrap();
+    let policy = SandboxPolicy::confined_to(worktree.path());
+
+    let result = shell::run(
+        &NoopSandbox,
+        &policy,
+        "echo ok > \"$TMPDIR/probe\" && cat \"$TMPDIR/probe\"",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.stdout.trim(), "ok");
+    assert!(policy.scratch.join("probe").exists());
+    std::fs::remove_dir_all(&policy.scratch).unwrap();
+}

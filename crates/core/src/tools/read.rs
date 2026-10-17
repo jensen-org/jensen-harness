@@ -1,11 +1,11 @@
-use std::path::Path;
-
-use super::{ToolError, resolve_within};
+use super::{ToolError, Worktree, io_error};
 
 /// # Errors
-/// [`ToolError::OutsideWorktree`] if `relative` escapes `worktree`,
+/// [`ToolError::OutsideWorktree`] if `relative` escapes the worktree,
 /// [`ToolError::Io`] if the file cannot be read.
-pub fn run(worktree: &Path, relative: &str) -> Result<String, ToolError> {
-    let path = resolve_within(worktree, relative)?;
-    std::fs::read_to_string(&path).map_err(|error| ToolError::Io(error.to_string()))
+pub fn run(worktree: &Worktree, relative: &str) -> Result<String, ToolError> {
+    worktree
+        .dir
+        .read_to_string(relative)
+        .map_err(|error| io_error(&error, relative))
 }

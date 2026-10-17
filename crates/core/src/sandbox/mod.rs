@@ -9,7 +9,7 @@
 //! writable tree. Network policy is a three state enum, the common
 //! denominator across backends.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // Both modules compile on every platform: building the argument list a
 // backend would run is pure, portable code with no OS-specific syscall
@@ -168,36 +168,4 @@ impl Sandbox for Unavailable {
             "no sandbox backend ships for this platform yet".to_string(),
         ))
     }
-}
-
-/// True when `candidate` is `root` or nested under it, with no `..`
-/// traversal trusted: both paths are resolved the same way before
-/// comparing.
-#[must_use]
-pub fn is_within(root: &Path, candidate: &Path) -> bool {
-    let Some(root) = normalize(root) else {
-        return false;
-    };
-    let Some(candidate) = normalize(candidate) else {
-        return false;
-    };
-    candidate.starts_with(root)
-}
-
-fn normalize(path: &Path) -> Option<PathBuf> {
-    let mut resolved = PathBuf::new();
-    for component in path.components() {
-        use std::path::Component::{CurDir, Normal, ParentDir, Prefix, RootDir};
-        match component {
-            Prefix(_) | RootDir => resolved.push(component.as_os_str()),
-            CurDir => {}
-            ParentDir => {
-                if !resolved.pop() {
-                    return None;
-                }
-            }
-            Normal(part) => resolved.push(part),
-        }
-    }
-    Some(resolved)
 }
