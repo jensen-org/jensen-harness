@@ -170,6 +170,7 @@ async fn memoized_results_and_runs_persist_and_are_append_only() {
             spec_hash: "h".into(),
             spec: "{}".into(),
             inputs: "{}".into(),
+            worktree: "/w".into(),
         })
         .await
         .unwrap();
@@ -203,6 +204,7 @@ async fn memoized_results_and_runs_persist_and_are_append_only() {
                 spec_hash: "again".into(),
                 spec: "{}".into(),
                 inputs: "{}".into(),
+                worktree: "/w".into(),
             })
             .await
             .is_err()

@@ -248,3 +248,21 @@ api_key_keychain = {}
         ));
     }
 }
+
+#[test]
+fn a_role_names_a_declared_provider_and_model() {
+    let with_roles = format!(
+        "{CONFIG}\n[roles]\nimplement = \"openai/gpt-x\"\nreview = \"gateway/vendor/model\"\n"
+    );
+    let registry = ProviderRegistry::from_toml(&with_roles).unwrap();
+    assert_eq!(registry.role("implement"), Some("openai/gpt-x"));
+    assert_eq!(registry.role("review"), Some("gateway/vendor/model"));
+    assert_eq!(registry.role("missing"), None);
+}
+
+#[test]
+fn a_role_bound_to_an_undeclared_provider_is_refused() {
+    let broken = format!("{CONFIG}\n[roles]\nimplement = \"ghost/model\"\n");
+    let error = ProviderRegistry::from_toml(&broken).unwrap_err();
+    assert!(matches!(error, ProviderError::Config(message) if message.contains("implement")));
+}

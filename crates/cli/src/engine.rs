@@ -7,6 +7,7 @@ use jensen_harness_core::providers::config::ProviderRegistry;
 use jensen_harness_core::providers::{Provider, ProviderError};
 use jensen_harness_core::secrets::SecretSource;
 use jensen_harness_core::store::{Store, StoreError};
+use jensen_harness_workflow::{CancellationToken, MemoryRunStore, RunStore};
 use tokio::sync::Mutex;
 
 /// A provider and the `provider_id/model_id` address it was chosen by.
@@ -21,6 +22,9 @@ pub trait ModelSource: Send + Sync {
     /// [`ProviderError`] when no model is chosen, the address is unknown, or
     /// its key is missing.
     fn resolve(&self, address: Option<&str>) -> Result<ResolvedModel, ProviderError>;
+
+    /// The `provider_id/model_id` a workflow role is bound to, if any.
+    fn role(&self, role: &str) -> Option<String>;
 }
 
 /// One provider and model for every session.
@@ -30,6 +34,10 @@ pub struct FixedModel {
 }
 
 impl ModelSource for FixedModel {
+    fn role(&self, _role: &str) -> Option<String> {
+        Some(format!("{}/{}", self.provider.id(), self.model))
+    }
+
     fn resolve(&self, _address: Option<&str>) -> Result<ResolvedModel, ProviderError> {
         Ok(ResolvedModel {
             provider: Arc::clone(&self.provider),
@@ -46,6 +54,10 @@ pub struct ConfiguredModels {
 }
 
 impl ModelSource for ConfiguredModels {
+    fn role(&self, role: &str) -> Option<String> {
+        self.registry.role(role).map(str::to_string)
+    }
+
     fn resolve(&self, address: Option<&str>) -> Result<ResolvedModel, ProviderError> {
         let address = address.or(self.default_model.as_deref()).ok_or_else(|| {
             ProviderError::Config(
@@ -73,6 +85,8 @@ pub struct Engine {
     pub store: Store,
     pub budget: BudgetSettings,
     pub sessions: Mutex<HashMap<String, Arc<Mutex<LiveSession>>>>,
+    pub checkpoints: Arc<dyn RunStore>,
+    pub active_workflows: Mutex<HashMap<String, CancellationToken>>,
 }
 
 impl Engine {
@@ -83,7 +97,17 @@ impl Engine {
             store,
             budget,
             sessions: Mutex::new(HashMap::new()),
+            checkpoints: Arc::new(MemoryRunStore::new()),
+            active_workflows: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Keeps workflow checkpoints in `checkpoints`, so a run survives a
+    /// restart.
+    #[must_use]
+    pub fn with_checkpoints(mut self, checkpoints: Arc<dyn RunStore>) -> Self {
+        self.checkpoints = checkpoints;
+        self
     }
 
     /// One provider and model, an in memory store and the built in budget:

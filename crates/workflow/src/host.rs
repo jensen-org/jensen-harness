@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use jensen_harness_core::budget::BudgetSettings;
@@ -19,6 +20,8 @@ pub trait Host: Send + Sync {
     /// # Errors
     /// [`RunError`] when the worktree tools cannot be built.
     fn tools(&self) -> Result<ToolSet, RunError>;
+
+    fn worktree(&self) -> &Path;
 
     fn budget(&self) -> &BudgetSettings;
 }

@@ -20,7 +20,7 @@ use crate::expr;
 use crate::host::Host;
 use crate::nodes::{self, Values};
 use crate::reducer;
-use crate::spec::{NodeSpec, Reducer};
+use crate::spec::{NodeSpec, Reducer, WorkflowSpec};
 use crate::state;
 use crate::validate::{Workflow, load};
 
@@ -87,6 +87,7 @@ impl Shared {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
+    Running,
     Succeeded,
     Failed,
     Cancelled,
@@ -579,6 +580,7 @@ impl Runner {
                 spec: spec_json,
                 inputs: serde_json::to_string(&request.inputs)
                     .map_err(|error| RunError::Engine(error.to_string()))?,
+                worktree: self.host.worktree().to_string_lossy().into_owned(),
             })
             .await?;
         nodes::journal_event(
@@ -719,6 +721,46 @@ impl Runner {
         .await
     }
 
+    /// Resumes a run from the spec it was started with.
+    ///
+    /// # Errors
+    /// [`RunError::UnknownRun`] when the store has no such run.
+    pub async fn resume_recorded(
+        &self,
+        run_id: &str,
+        cancel: CancellationToken,
+    ) -> Result<RunReport, RunError> {
+        let record = self
+            .store
+            .workflow_run(run_id)
+            .await?
+            .ok_or_else(|| RunError::UnknownRun(run_id.to_owned()))?;
+        let spec: WorkflowSpec = serde_json::from_str(&record.spec)
+            .map_err(|error| RunError::Engine(error.to_string()))?;
+        self.resume(Workflow::new(spec)?, run_id, cancel).await
+    }
+
+    /// Where a run stands, from its last checkpoint.
+    ///
+    /// # Errors
+    /// [`RunError::UnknownRun`] when the store has no such run.
+    pub async fn status(&self, run_id: &str) -> Result<(String, RunStatus), RunError> {
+        let record = self
+            .store
+            .workflow_run(run_id)
+            .await?
+            .ok_or_else(|| RunError::UnknownRun(run_id.to_owned()))?;
+        let runs = self.checkpoints.list_runs(run_id, None, 1).await?;
+        let Some(latest) = runs.runs().first() else {
+            return Ok((record.spec_hash, RunStatus::Running));
+        };
+        let checkpoint = self
+            .checkpoints
+            .load_latest_checkpoint_for_run(latest.run_id())
+            .await?;
+        Ok((record.spec_hash, map_status(checkpoint.status())))
+    }
+
     async fn release_in_flight(&self, shared: &Shared) -> Result<usize, RunError> {
         let open = self.store.open_reservations_under(&shared.run_id).await?;
         for call_id in &open {
@@ -730,13 +772,8 @@ impl Runner {
     async fn report(&self, shared: &Arc<Shared>, ended: Ended) -> Result<RunReport, RunError> {
         let failure = shared.take_failure();
         let status = match (&failure, ended.status) {
-            (Some(RunError::BudgetExhausted { .. }), _) | (_, dagrs::RunStatus::BudgetExceeded) => {
-                RunStatus::BudgetExceeded
-            }
-            (_, dagrs::RunStatus::Succeeded) => RunStatus::Succeeded,
-            (_, dagrs::RunStatus::Cancelled) => RunStatus::Cancelled,
-            (_, dagrs::RunStatus::DeadlineExceeded) => RunStatus::DeadlineExceeded,
-            _ => RunStatus::Failed,
+            (Some(RunError::BudgetExhausted { .. }), _) => RunStatus::BudgetExceeded,
+            (_, other) => map_status(other),
         };
         let released = if status == RunStatus::Succeeded {
             0
@@ -797,6 +834,17 @@ impl Runner {
             _ => BTreeMap::new(),
         };
         Ok((channels, outcomes))
+    }
+}
+
+fn map_status(status: dagrs::RunStatus) -> RunStatus {
+    match status {
+        dagrs::RunStatus::Running | dagrs::RunStatus::Interrupted => RunStatus::Running,
+        dagrs::RunStatus::Succeeded => RunStatus::Succeeded,
+        dagrs::RunStatus::Cancelled => RunStatus::Cancelled,
+        dagrs::RunStatus::BudgetExceeded => RunStatus::BudgetExceeded,
+        dagrs::RunStatus::DeadlineExceeded => RunStatus::DeadlineExceeded,
+        _ => RunStatus::Failed,
     }
 }
 

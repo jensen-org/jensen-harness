@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::engine::{Engine, LiveSession};
+use crate::workflow::{workflow_cancel, workflow_resume, workflow_start, workflow_status};
 
 /// # Errors
 /// Returns an I/O error if a response cannot be written; a request that
@@ -64,12 +65,16 @@ where
     }
 }
 
-async fn dispatch(engine: &Engine, request: Request) -> Response {
+async fn dispatch(engine: &Arc<Engine>, request: Request) -> Response {
     match request.method.as_str() {
         "run.new" => run_new(engine, request.id, request.params).await,
         "session.new" => session_new(engine, request.id, request.params).await,
         "session.prompt" => session_prompt(engine, request.id, request.params).await,
         "session.resume" => session_resume(engine, request.id, request.params).await,
+        "workflow.start" => workflow_start(engine, request.id, request.params).await,
+        "workflow.status" => workflow_status(engine, request.id, request.params).await,
+        "workflow.resume" => workflow_resume(engine, request.id, request.params).await,
+        "workflow.cancel" => workflow_cancel(engine, request.id, request.params).await,
         other => Response::err(
             request.id,
             ResponseError::new(
@@ -80,15 +85,15 @@ async fn dispatch(engine: &Engine, request: Request) -> Response {
     }
 }
 
-fn invalid_params(id: RequestId, message: impl Into<String>) -> Response {
+pub(crate) fn invalid_params(id: RequestId, message: impl Into<String>) -> Response {
     Response::err(id, ResponseError::new(error_code::INVALID_PARAMS, message))
 }
 
-fn internal(id: RequestId, message: impl Into<String>) -> Response {
+pub(crate) fn internal(id: RequestId, message: impl Into<String>) -> Response {
     Response::err(id, ResponseError::internal(message))
 }
 
-fn parse_params<T: serde::de::DeserializeOwned>(
+pub(crate) fn parse_params<T: serde::de::DeserializeOwned>(
     method: &str,
     params: Option<Value>,
 ) -> Result<T, String> {

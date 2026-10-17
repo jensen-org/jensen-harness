@@ -55,6 +55,8 @@ struct ConfigFile {
     default_model: Option<String>,
     providers: BTreeMap<String, ProviderEntry>,
     #[serde(default)]
+    roles: BTreeMap<String, String>,
+    #[serde(default)]
     pricing: PricingTable,
     budget: Option<BudgetFile>,
 }
@@ -63,6 +65,7 @@ struct ConfigFile {
 pub struct ProviderRegistry {
     default_model: Option<String>,
     providers: BTreeMap<String, ProviderEntry>,
+    roles: BTreeMap<String, String>,
     budget: BudgetSettings,
 }
 
@@ -137,10 +140,21 @@ impl ProviderRegistry {
                 _ => {}
             }
         }
+        for (role, address) in &file.roles {
+            let known = address
+                .split_once('/')
+                .is_some_and(|(provider, _model)| file.providers.contains_key(provider));
+            if !known {
+                return Err(ProviderError::Config(format!(
+                    "role {role} names {address:?}, which is not provider_id/model_id of a declared provider"
+                )));
+            }
+        }
         let budget = budget_settings(&file)?;
         Ok(Self {
             default_model: file.default_model,
             providers: file.providers,
+            roles: file.roles,
             budget,
         })
     }
@@ -153,6 +167,12 @@ impl ProviderRegistry {
     #[must_use]
     pub fn default_model(&self) -> Option<&str> {
         self.default_model.as_deref()
+    }
+
+    /// The model a workflow role is bound to, as `provider_id/model_id`.
+    #[must_use]
+    pub fn role(&self, name: &str) -> Option<&str> {
+        self.roles.get(name).map(String::as_str)
     }
 
     /// The keychain service and user a provider's key is stored under.

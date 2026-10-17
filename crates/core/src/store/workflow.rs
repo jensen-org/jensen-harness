@@ -11,6 +11,7 @@ pub struct WorkflowRun {
     pub spec_hash: String,
     pub spec: String,
     pub inputs: String,
+    pub worktree: String,
 }
 
 impl Store {
@@ -64,9 +65,9 @@ impl Store {
     pub async fn create_workflow_run(&self, run: WorkflowRun) -> Result<(), StoreError> {
         self.with(move |conn| {
             conn.execute(
-                "INSERT INTO workflow_runs (run_id, spec_hash, spec, inputs, created_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![run.run_id, run.spec_hash, run.spec, run.inputs, now_ms()?],
+                "INSERT INTO workflow_runs (run_id, spec_hash, spec, inputs, worktree, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![run.run_id, run.spec_hash, run.spec, run.inputs, run.worktree, now_ms()?],
             )?;
             Ok(())
         })
@@ -80,7 +81,7 @@ impl Store {
         self.with(move |conn| {
             Ok(conn
                 .query_row(
-                    "SELECT run_id, spec_hash, spec, inputs FROM workflow_runs WHERE run_id = ?1",
+                    "SELECT run_id, spec_hash, spec, inputs, worktree FROM workflow_runs WHERE run_id = ?1",
                     params![key],
                     |row| {
                         Ok(WorkflowRun {
@@ -88,6 +89,7 @@ impl Store {
                             spec_hash: row.get(1)?,
                             spec: row.get(2)?,
                             inputs: row.get(3)?,
+                            worktree: row.get(4)?,
                         })
                     },
                 )

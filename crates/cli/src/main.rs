@@ -53,6 +53,46 @@ enum Command {
         #[command(subcommand)]
         action: AuthAction,
     },
+    /// Check and draw workflow files.
+    Workflow {
+        #[command(subcommand)]
+        action: WorkflowAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkflowAction {
+    /// Load a workflow file and report whether it is valid.
+    Validate { file: PathBuf },
+    /// Print a workflow file's graph in Graphviz DOT.
+    Dot { file: PathBuf },
+}
+
+fn load_workflow(file: &std::path::Path) -> anyhow::Result<jensen_harness_workflow::Workflow> {
+    let yaml = std::fs::read_to_string(file)
+        .with_context(|| format!("the workflow {} could not be read", file.display()))?;
+    jensen_harness_workflow::load(&yaml)
+        .with_context(|| format!("the workflow {} is invalid", file.display()))
+}
+
+fn workflow_command(action: &WorkflowAction) -> anyhow::Result<()> {
+    let mut out = std::io::stdout();
+    match action {
+        WorkflowAction::Validate { file } => {
+            let workflow = load_workflow(file)?;
+            writeln!(
+                out,
+                "ok {} {} ({} waves)",
+                workflow.spec().name,
+                workflow.hash(),
+                workflow.waves().len()
+            )?;
+        }
+        WorkflowAction::Dot { file } => {
+            writeln!(out, "{}", load_workflow(file)?.dot())?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Subcommand)]
@@ -117,7 +157,18 @@ fn build_engine(
     if let Some(address) = models.default_model.as_deref() {
         models.resolve(Some(address))?;
     }
-    Ok(Engine::new(Box::new(models), store, budget))
+    let checkpoints = path.parent().map_or_else(
+        || PathBuf::from("workflow-runs"),
+        |dir| dir.join("workflow-runs"),
+    );
+    let checkpoints =
+        jensen_harness_workflow::FileRunStore::new(&checkpoints).with_context(|| {
+            format!(
+                "the workflow checkpoint directory {} could not be opened",
+                checkpoints.display()
+            )
+        })?;
+    Ok(Engine::new(Box::new(models), store, budget).with_checkpoints(Arc::new(checkpoints)))
 }
 
 #[tokio::main]
@@ -126,6 +177,9 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    if let Command::Workflow { action } = &cli.command {
+        return workflow_command(action);
+    }
     let registry = load_registry(cli.config)?;
     if let Command::Auth {
         action: AuthAction::Set { provider },
@@ -135,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let engine = Arc::new(build_engine(registry, cli.model, cli.state)?);
     match cli.command {
-        Command::Auth { .. } => {}
+        Command::Auth { .. } | Command::Workflow { .. } => {}
         Command::Run => {
             let reader = BufReader::new(stdin());
             rpc::serve_connection(reader, stdout(), engine).await?;

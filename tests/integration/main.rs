@@ -10,7 +10,9 @@ mod common;
 
 mod protocol_frame;
 
+mod workflow_cli;
 mod workflow_dagrs_contract;
+mod workflow_rpc;
 mod workflow_run;
 mod workflow_spec;
 mod workflow_state;

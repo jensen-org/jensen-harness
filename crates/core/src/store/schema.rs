@@ -81,6 +81,7 @@ CREATE TABLE workflow_runs (
     spec_hash TEXT NOT NULL,
     spec TEXT NOT NULL,
     inputs TEXT NOT NULL,
+    worktree TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL
 );
 

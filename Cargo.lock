@@ -2040,6 +2040,7 @@ dependencies = [
  "dirs",
  "jensen-harness-core",
  "jensen-harness-protocol",
+ "jensen-harness-workflow",
  "libc",
  "serde",
  "serde_json",

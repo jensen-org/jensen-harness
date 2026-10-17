@@ -39,6 +39,10 @@ impl Host for TestHost {
         Ok(tool_set(&self.dir))
     }
 
+    fn worktree(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     fn budget(&self) -> &BudgetSettings {
         &self.budget
     }
@@ -312,6 +316,7 @@ nodes:
             spec_hash: workflow.hash().to_owned(),
             spec: "{}".to_owned(),
             inputs: "{}".to_owned(),
+            worktree: "/w".into(),
         })
         .await
         .unwrap();
