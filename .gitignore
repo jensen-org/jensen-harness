@@ -3,3 +3,4 @@
 **/*.sqlite-*
 .DS_Store
 .claude/settings.local.json
+docs/plan.md
