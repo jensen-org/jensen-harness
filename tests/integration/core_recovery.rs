@@ -570,3 +570,91 @@ async fn an_expand_handle_from_before_a_restore_is_refused_and_never_names_new_o
         "the old handle must not read the new output"
     );
 }
+
+struct Ext {
+    calls: std::sync::atomic::AtomicUsize,
+    replay: jensen_harness_core::toolset::Replay,
+}
+
+#[async_trait]
+impl jensen_harness_core::toolset::ToolProvider for Ext {
+    fn specs(&self) -> Vec<jensen_harness_core::providers::ToolSpec> {
+        vec![jensen_harness_core::providers::ToolSpec {
+            name: "ext_do".to_owned(),
+            description: "does it".to_owned(),
+            input_schema: json!({"type": "object"}),
+        }]
+    }
+
+    fn replay(&self, _name: &str) -> jensen_harness_core::toolset::Replay {
+        self.replay
+    }
+
+    async fn invoke(
+        &self,
+        _name: &str,
+        _input: &serde_json::Value,
+    ) -> Result<
+        jensen_harness_core::toolset::ProviderReply,
+        jensen_harness_core::toolset::ToolSetError,
+    > {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(jensen_harness_core::toolset::ProviderReply {
+            text: "done by the extension".to_owned(),
+            is_error: false,
+        })
+    }
+}
+
+async fn resume_after_started_extension(
+    replay: jensen_harness_core::toolset::Replay,
+) -> (usize, String) {
+    let dir = tempdir().unwrap();
+    let (finished, _) = run_whole(
+        dir.path(),
+        vec![calls_tool("x1", "ext_do", json!({})), says("done")],
+    )
+    .await;
+    let started_at = finished
+        .events
+        .iter()
+        .position(|event| event.kind == EventKind::ToolStarted)
+        .unwrap()
+        + 1;
+    let store = journal_prefix(&finished, started_at).await;
+    let recovered = Recovered::load(&store, &finished.session_id).await.unwrap();
+    let ext = Arc::new(Ext {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        replay,
+    });
+    let mut session = Session::restore(
+        store,
+        recovered,
+        tool_set(dir.path()).with_provider(ext.clone()),
+    )
+    .await
+    .unwrap();
+    let provider = Scripted::of(vec![says("ok")]);
+    session.resume(&provider).await.unwrap();
+    let results = &provider.request(0).turns[2];
+    let ContentBlock::ToolResult { content, .. } = &results.content[0] else {
+        panic!("expected a tool result");
+    };
+    (
+        ext.calls.load(std::sync::atomic::Ordering::SeqCst),
+        content.clone(),
+    )
+}
+
+#[tokio::test]
+async fn an_unfinished_extension_call_is_repeated_only_when_its_provider_says_it_is_safe() {
+    let (calls, content) =
+        resume_after_started_extension(jensen_harness_core::toolset::Replay::Never).await;
+    assert_eq!(calls, 0, "a mutating call must not run again");
+    assert!(content.contains("interrupted by a restart"), "{content}");
+
+    let (calls, content) =
+        resume_after_started_extension(jensen_harness_core::toolset::Replay::Repeat).await;
+    assert_eq!(calls, 1, "a read only call runs again");
+    assert!(content.contains("done by the extension"), "{content}");
+}

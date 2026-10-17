@@ -264,6 +264,20 @@ pub fn shell(
     Ok(Compacted::new(&raw, text))
 }
 
+pub fn external(tool: &str, text: &str, store: &RawStore) -> Result<Compacted, CompactError> {
+    let filtered = shell::filter(tool, text, Limits::default());
+    let mut shown = if filtered.text.is_empty() {
+        "(no output)".to_string()
+    } else {
+        filtered.text.clone()
+    };
+    if filtered.lossy {
+        let handle = store.tee(text)?;
+        shown.push_str(&format!("\n[filtered; full output: expand {handle}]"));
+    }
+    Ok(Compacted::new(text, shown))
+}
+
 /// A slice of a stored raw output.
 ///
 /// # Errors

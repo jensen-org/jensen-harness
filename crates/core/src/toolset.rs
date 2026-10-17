@@ -113,7 +113,29 @@ pub enum Access {
     ReadWrite,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Replay {
+    Repeat,
+    Never,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderReply {
+    pub text: String,
+    pub is_error: bool,
+}
+
+#[async_trait::async_trait]
+pub trait ToolProvider: Send + Sync {
+    fn specs(&self) -> Vec<ToolSpec>;
+
+    fn replay(&self, name: &str) -> Replay;
+
+    async fn invoke(&self, name: &str, input: &Value) -> Result<ProviderReply, ToolSetError>;
+}
+
 pub struct ToolSet {
+    providers: Vec<std::sync::Arc<dyn ToolProvider>>,
     worktree: Worktree,
     sandbox: Box<dyn Sandbox>,
     policy: SandboxPolicy,
@@ -184,6 +206,7 @@ impl ToolSet {
         store: RawStore,
     ) -> Self {
         Self {
+            providers: Vec::new(),
             worktree,
             sandbox,
             policy,
@@ -191,6 +214,40 @@ impl ToolSet {
             shell_timeout: shell::DEFAULT_TIMEOUT,
             read_only: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_provider(mut self, provider: std::sync::Arc<dyn ToolProvider>) -> Self {
+        self.providers.push(provider);
+        self
+    }
+
+    #[must_use]
+    pub fn specs(&self) -> Vec<ToolSpec> {
+        let mut extra: Vec<ToolSpec> = self
+            .providers
+            .iter()
+            .flat_map(|provider| provider.specs())
+            .collect();
+        extra.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut specs = Self::builtin_specs();
+        specs.extend(extra);
+        specs
+    }
+
+    #[must_use]
+    pub fn replay(&self, name: &str) -> Replay {
+        if matches!(name, "read" | "glob" | "grep" | "expand") {
+            return Replay::Repeat;
+        }
+        self.provider_of(name)
+            .map_or(Replay::Never, |provider| provider.replay(name))
+    }
+
+    fn provider_of(&self, name: &str) -> Option<&std::sync::Arc<dyn ToolProvider>> {
+        self.providers
+            .iter()
+            .find(|provider| provider.specs().iter().any(|spec| spec.name == name))
     }
 
     #[must_use]
@@ -223,7 +280,7 @@ impl ToolSet {
     /// The same list in the same order on every call, so the tool block
     /// stays byte identical and caches.
     #[must_use]
-    pub fn specs() -> Vec<ToolSpec> {
+    pub fn builtin_specs() -> Vec<ToolSpec> {
         let spec = |name: &str, description: &str, schema: Value| ToolSpec {
             name: name.to_string(),
             description: description.to_string(),
@@ -298,8 +355,25 @@ impl ToolSet {
             "grep" => self.grep(input),
             "shell" => self.shell(input).await,
             "expand" => self.expand(input),
-            other => Ok(ToolReply::model_error(other, "unknown tool")),
+            other => match self.provider_of(other) {
+                Some(provider) => self.external(provider, other, input).await,
+                None => Ok(ToolReply::model_error(other, "unknown tool")),
+            },
         }
+    }
+
+    async fn external(
+        &self,
+        provider: &std::sync::Arc<dyn ToolProvider>,
+        name: &str,
+        input: &Value,
+    ) -> Result<ToolReply, ToolSetError> {
+        let reply = provider.invoke(name, input).await?;
+        let compacted = render::external(name, &reply.text, &self.store).map_err(infrastructure)?;
+        Ok(ToolReply {
+            is_error: reply.is_error,
+            ..ToolReply::ok(compacted)
+        })
     }
 
     fn read(&self, input: &Value) -> Result<ToolReply, ToolSetError> {

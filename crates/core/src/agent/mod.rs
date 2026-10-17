@@ -24,7 +24,7 @@ use crate::store::{
     EventKind, NewEvent, NewScope, Refusal, ReserveOutcome, ReserveRequest, ScopeKind, Store,
     StoreError,
 };
-use crate::toolset::{ToolReply, ToolSet, ToolSetError};
+use crate::toolset::{Replay, ToolReply, ToolSet, ToolSetError};
 use recovery::{OpenPrompt, PendingTools, ToolProgress};
 
 pub use recovery::Recovered;
@@ -33,9 +33,6 @@ const SYSTEM_PROMPT: &str = "You are jensen-harness, a software engineering agen
 
 pub const DEFAULT_MAX_TURNS: u32 = 20;
 const RESERVATION_TTL_MS: u64 = 10 * 60 * 1000;
-
-/// These tools change nothing, so running one twice is harmless.
-const READ_ONLY_TOOLS: [&str; 4] = ["read", "glob", "grep", "expand"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -365,7 +362,7 @@ impl Session {
                 model: self.model.clone(),
                 system: SYSTEM_PROMPT.to_string(),
                 turns: self.turns.clone(),
-                tools: ToolSet::specs(),
+                tools: self.tools.specs(),
             };
             let call_id = ulid::Ulid::generate().to_string();
             let (tokens, held_cost) = reservation(&request, self.config.budget.price.as_ref())?;
@@ -613,7 +610,7 @@ impl Session {
             let prior = progress.remove(id);
             let reply = match prior {
                 Some(ToolProgress::Finished(reply)) => reply,
-                Some(ToolProgress::Started) if !READ_ONLY_TOOLS.contains(&name.as_str()) => {
+                Some(ToolProgress::Started) if self.tools.replay(name) == Replay::Never => {
                     let reply = interrupted(name);
                     self.record_tool_finished(open, id, &reply).await?;
                     reply

@@ -37,6 +37,7 @@ mod core_sandbox_seatbelt_denies;
 mod core_secrets;
 mod core_store;
 mod core_telemetry;
+mod core_tool_providers;
 mod core_tools_confinement;
 mod core_tools_edit;
 mod core_tools_glob;

@@ -104,7 +104,7 @@ async fn every_result_for_one_reply_comes_back_in_one_user_turn_in_call_order() 
     assert_eq!(result_of(results, 1), ("two", "beta", false));
     let second_request = provider.request(1);
     assert_eq!(second_request.turns.len(), 3);
-    assert_eq!(second_request.tools, ToolSet::specs());
+    assert_eq!(second_request.tools, ToolSet::builtin_specs());
 }
 
 #[tokio::test]
@@ -299,10 +299,10 @@ async fn a_second_prompt_continues_the_same_transcript() {
 
 #[test]
 fn the_tool_list_is_fixed_ordered_and_schema_shaped() {
-    let specs: Vec<ToolSpec> = ToolSet::specs();
+    let specs: Vec<ToolSpec> = ToolSet::builtin_specs();
     let names: Vec<&str> = specs.iter().map(|spec| spec.name.as_str()).collect();
     assert_eq!(names, ["read", "edit", "glob", "grep", "shell", "expand"]);
-    assert_eq!(specs, ToolSet::specs());
+    assert_eq!(specs, ToolSet::builtin_specs());
     for spec in &specs {
         assert_eq!(spec.input_schema["type"], "object", "{}", spec.name);
         assert!(!spec.description.is_empty());
