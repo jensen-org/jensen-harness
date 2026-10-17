@@ -16,6 +16,7 @@ Jensen today wraps agent runtimes. It hosts OpenCode, Codex and others over ACP,
 - **harness2 (google-research/harness2), rejected.** It is a batch research optimizer that rewrites OpenCode and Codex config files to score better on benchmarks. It has no agent loop, tools, sessions, daemon, MCP or LSP. It is v0.1.0 with 3 commits, Vertex only, and runs with sandboxes disabled. Two ideas are kept: completion markers fingerprinted with the harness version, and a per domain lesson library.
 - **Fork of OpenCode V2, rejected.** It takes about 44 commits a day, depends on Effect v4, has experimental API groups, a trademark on its name, and no LSP. Its execution is owned by a single process, tool effects are at least once, and it has no DAG. OpenCode stays an alternative ACP runtime under Jensen, and its session durability spec (`specs/v2/session.md`) serves as a reference.
 - **Chosen: a Rust harness core, launched by jensend as an ACP agent.** It matches Jensen's stack and SQLite store, and respects the process registry guard (`jensen/scripts/guards.sh`), because sub agents run as async tasks inside one harness process.
+- **ACP is an outer shell only, never the engine.** jensend launches and counts the harness as one ACP process so the board can see and supervise it, the same mechanism OpenCode uses. Inside that shell, the harness never drives another tool's own agent loop over its ACP interface (not OpenCode's, not Codex's, not Gemini CLI's) as a black box sub agent. Every model call, across every vendor, goes through the harness's own agent loop and the Provider layer in section 6a. Multi model collaboration (section 7) means several vendors' APIs called directly by our own engine, never several wrapped CLIs talking to each other. For the shell itself, the harness depends on the published `agent-client-protocol` crate (`agentclientprotocol/rust-sdk`), not a hand rolled reimplementation: Jensen's own ACP client is about 991 lines of private, hand rolled NDJSON/JSON-RPC pinned to protocol version 1, which is not published or reusable across repos, and duplicating it by hand would only repeat that choice a second time instead of improving on it.
 
 ## Architecture
 
@@ -147,6 +148,29 @@ Jensen today wraps agent runtimes. It hosts OpenCode, Codex and others over ACP,
   - Other 429s honor `retry-after`.
   - Fallback goes across providers within the same tier first, then down a tier, and the budget is checked again before each fallback.
 
+### 6a. Provider layer, every vendor plus gateways
+
+Added after the user flagged that the harness must support every model provider, including gateways that merge several providers behind one endpoint, with a configurable base URL and API key for each, never a hardcoded vendor list.
+
+- **No provider is named in code.** A `Provider` is config, not a Rust type per vendor: `{id, transport, base_url, api_key_env, models: [...]}`. Users add, remove or point a provider at a different URL by editing config, never by changing the harness. This mirrors Jensen's own `no-provider-clients` / `no-hardcoded-integrations` rule, a good discipline to borrow even though it is not binding on this repo.
+- **Two transports cover every vendor:**
+  - **Anthropic Messages**, native. Kept as its own transport because the token control design in section 6 depends on Anthropic-specific mechanics: prompt cache breakpoints and TTLs, `output_config.effort`, task budgets, and thinking-block interop. A provider entry with `transport: anthropic` speaks this shape against its own `base_url`, so Anthropic direct, Bedrock, Vertex and any Anthropic-compatible gateway all fit here.
+  - **OpenAI-compatible Chat Completions**, generic. Covers everything else behind one implementation: OpenAI itself, Gemini's OpenAI-compatible endpoint, Mistral, and the Chinese providers (DeepSeek, Qwen/Alibaba, Zhipu GLM, Moonshot Kimi, MiniMax, Baichuan, and others), each of which exposes this shape. A provider entry with `transport: openai_compatible` only needs its `base_url`, `api_key_env` and a model list; no per-vendor code.
+  - A provider can instead be a **gateway** (OpenRouter, a LiteLLM proxy, Portkey, or a self-hosted router that merges several upstream vendors behind one endpoint): it is configured exactly like any other `openai_compatible` (or `anthropic`-shaped, for a gateway that proxies that shape) entry, since a gateway's whole purpose is presenting one URL and key for many underlying models. The model ladder in section 7 references `provider_id/model_id`, so a gateway's merged models are addressable the same way a direct vendor's are, and switching a role from a direct provider to a gateway is a config change, not a code change.
+- **Secrets:** every provider holds `api_key_env`, the name of an environment variable, never the key itself, so config files commit safely. The harness reads the variable at startup and fails loudly if it is unset for a provider any role references.
+- **Capabilities are declared per transport, not assumed:** prompt caching, extended thinking, task budgets, structured outputs and batch APIs exist only on `transport: anthropic`. An `openai_compatible` provider gets the budget ledger, effort-as-prompt-hint, and escalation ladder from section 7, but not cache-layer accounting, since most OpenAI-compatible endpoints do not expose cache token counts the way Anthropic does. Where a specific OpenAI-compatible vendor does expose them (some do, in nonstandard response fields), the ledger reads them opportunistically and never assumes they exist.
+- **Routing and fallback (section 6, Errors) extends across transports, not just within one:** the per-tier, cross-provider fallback chain can mix an `anthropic` provider and several `openai_compatible` ones, including gateways, as long as each rung names a provider id and a model id the config declares.
+- **Config shape (illustrative, not final):**
+  ```yaml
+  providers:
+    anthropic: {transport: anthropic, base_url: https://api.anthropic.com, api_key_env: ANTHROPIC_API_KEY}
+    openai: {transport: openai_compatible, base_url: https://api.openai.com/v1, api_key_env: OPENAI_API_KEY}
+    mistral: {transport: openai_compatible, base_url: https://api.mistral.ai/v1, api_key_env: MISTRAL_API_KEY}
+    gemini_compat: {transport: openai_compatible, base_url: https://generativelanguage.googleapis.com/v1beta/openai, api_key_env: GEMINI_API_KEY}
+    deepseek: {transport: openai_compatible, base_url: https://api.deepseek.com, api_key_env: DEEPSEEK_API_KEY}
+    openrouter_gateway: {transport: openai_compatible, base_url: https://openrouter.ai/api/v1, api_key_env: OPENROUTER_API_KEY}
+  ```
+
 ### 7. Assigning models to agents
 - **Declarative per role ladder** with `escalate_on` (tests failed, CI failed, reviewer rejected, max tokens, loop detected) and `no_escalate_on` (soft cap, refusal).
 - **Escalation order:** raise effort first, then move to a stronger model, always gated on a verifier. Anthropic measured low effort followed by a retry at high reaching about 97% at $0.17 per task, against 95.3% at $0.29 for running everything at high. A model switch starts a fresh context from a handoff summary.
@@ -223,7 +247,7 @@ One Rust crate sliced like Jensen (`domain`, `application`, `adapters`): `events
 
 ## Delivery phases
 0. **Jensen security fixes 1 to 3** above, each with a regression test.
-1. **Spike.** An ACP binary with the Anthropic provider, an append only loop and 5 tools in a Seatbelt sandbox. jensend launches it from a manifest (`jensen/backend/src/agents/adapters/assistant/manifest.rs`), and it completes one approved plan through the Jensen MCP tools.
+1. **Spike.** An ACP shell (the `agent-client-protocol` crate, not hand rolled) wraps our own agent loop: the Anthropic provider, an append only loop and 5 tools in a Seatbelt sandbox. jensend launches it from a manifest (`jensen/backend/src/agents/adapters/assistant/manifest.rs`), and it completes one approved plan through the Jensen MCP tools.
 2. **Durability and budget.** Step journal, resume after `kill -9` with no double charge, the hierarchical ledger, cache layering and telemetry.
 3. **DAG.** The YAML compiler, channels and reducers, and the node kinds. Jensen's `feature` workflow runs end to end with no human after approval, including a clean context reviewer, the scope filter and the promotion gates.
 4. **Judge and ingress.** The `Judge` trait with the Laya backend first, labeled question sets, temperature fitting and shadow comparison, then the optional Jev backend; source comment, PR and issue, then editor ingress; dedupe and trust.
