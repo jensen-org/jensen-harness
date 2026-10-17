@@ -225,6 +225,10 @@ impl Provider for GenaiProvider {
         &self.id
     }
 
+    fn reports_cache(&self) -> bool {
+        self.adapter == AdapterKind::Anthropic
+    }
+
     async fn complete(
         &self,
         request: CompletionRequest,

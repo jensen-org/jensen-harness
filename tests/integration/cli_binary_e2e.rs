@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn completion(finish_reason: &str, message: Value) -> ResponseTemplate {
+pub fn completion(finish_reason: &str, message: Value) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({
         "id": "x",
         "object": "chat.completion",
@@ -20,7 +20,7 @@ fn completion(finish_reason: &str, message: Value) -> ResponseTemplate {
     }))
 }
 
-fn write_config(dir: &std::path::Path, base_url: &str) -> std::path::PathBuf {
+pub fn write_config(dir: &std::path::Path, base_url: &str) -> std::path::PathBuf {
     let config = dir.join("providers.toml");
     std::fs::write(
         &config,
@@ -64,12 +64,15 @@ async fn the_binary_answers_a_prompt_by_reading_a_file_through_a_configured_prov
     let worktree = tempfile::tempdir().unwrap();
     std::fs::write(worktree.path().join("notes.txt"), "alpha\ntoken: 4417\n").unwrap();
     let config = write_config(dir.path(), &server.uri());
+    let state = dir.path().join("state.sqlite");
     let worktree_path = worktree.path().to_str().unwrap().to_string();
 
     let lines = tokio::task::spawn_blocking(move || {
         let mut child = Command::new(binary_path())
             .arg("--config")
             .arg(&config)
+            .arg("--state")
+            .arg(&state)
             .arg("run")
             .env("JENSEN_HARNESS_E2E_KEY", "test-key")
             .stdin(Stdio::piped())
@@ -132,6 +135,8 @@ fn the_binary_refuses_to_start_when_the_chosen_models_key_is_missing() {
     let output = Command::new(binary_path())
         .arg("--config")
         .arg(&config)
+        .arg("--state")
+        .arg(dir.path().join("state.sqlite"))
         .arg("run")
         .env_remove("JENSEN_HARNESS_E2E_KEY")
         .stdin(Stdio::null())
@@ -151,6 +156,8 @@ fn the_binary_reports_a_missing_config_file_by_path() {
     let output = Command::new(binary_path())
         .arg("--config")
         .arg(&missing)
+        .arg("--state")
+        .arg(dir.path().join("state.sqlite"))
         .arg("run")
         .stdin(Stdio::null())
         .output()

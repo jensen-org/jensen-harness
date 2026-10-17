@@ -377,16 +377,21 @@ fn a_filtered_shell_result_is_teed_and_expand_returns_the_exact_raw_lines() {
         passing_tests(40)
     );
 
+    let handle = store.next_handle();
+
     let out: Compacted = render::shell("cargo test", 101, &stdout, "", &store).unwrap();
 
     assert!(out.text.starts_with("exit 101\n"));
-    assert!(out.text.ends_with("[filtered; full output: expand r1]"));
+    assert!(
+        out.text
+            .ends_with(&format!("[filtered; full output: expand {handle}]"))
+    );
     assert!(out.sent_tokens < out.raw_tokens / 2);
 
-    let raw = render::expand(&store, "r1", 0, 400).unwrap();
+    let raw = render::expand(&store, &handle, 0, 400).unwrap();
     let expected = format!("stdout:\n{stdout}\nstderr:\n");
     assert_eq!(raw.text, expected.lines().collect::<Vec<_>>().join("\n"));
-    let window = render::expand(&store, "r1", 2, 3).unwrap();
+    let window = render::expand(&store, &handle, 2, 3).unwrap();
     assert!(
         window
             .text
@@ -401,14 +406,24 @@ fn an_unfiltered_shell_result_is_not_teed() {
     let store = RawStore::new(dir.path());
     let out = render::shell("echo hi", 0, "hi\n", "", &store).unwrap();
     assert_eq!(out.text, "hi");
-    assert!(render::expand(&store, "r1", 0, 10).is_err());
+    assert!(render::expand(&store, &store.next_handle(), 0, 10).is_err());
 }
 
 #[test]
 fn only_handles_this_store_issued_can_be_expanded() {
     let dir = tempfile::tempdir().unwrap();
     let store = RawStore::new(dir.path());
-    for handle in ["../secret", "r1/../../x", "r", "x1", "r1.txt", ""] {
+    for handle in [
+        "../secret",
+        "r1/../../x",
+        "r",
+        "x1",
+        "r1.txt",
+        "r1",
+        "r-x-1",
+        "r--1",
+        "",
+    ] {
         assert!(
             matches!(
                 store.slice(handle, 0, 5),
@@ -440,8 +455,9 @@ fn a_symlink_planted_at_the_next_handle_is_refused_and_the_target_untouched() {
     let outside = tempfile::tempdir().unwrap();
     let target = outside.path().join("config");
     std::fs::write(&target, "original").unwrap();
-    std::os::unix::fs::symlink(&target, dir.path().join("r1.txt")).unwrap();
     let store = RawStore::new(dir.path());
+    let next = store.next_handle();
+    std::os::unix::fs::symlink(&target, dir.path().join(format!("{next}.txt"))).unwrap();
 
     let error = store.tee("attacker controlled output").unwrap_err();
 
@@ -453,23 +469,53 @@ fn a_symlink_planted_at_the_next_handle_is_refused_and_the_target_untouched() {
 fn a_file_planted_under_a_handle_that_was_never_issued_cannot_be_expanded() {
     let dir = tempfile::tempdir().unwrap();
     let store = RawStore::new(dir.path());
-    std::fs::write(dir.path().join("r7.txt"), "planted").unwrap();
+    let future = store.next_handle().replace("-1", "-7");
+    std::fs::write(dir.path().join(format!("{future}.txt")), "planted").unwrap();
     assert!(matches!(
-        store.slice("r7", 0, 10),
+        store.slice(&future, 0, 10),
         Err(CompactError::UnknownHandle(_))
     ));
 
     let issued = store.tee("real").unwrap();
-    assert_eq!(issued, "r1");
-    assert_eq!(store.slice("r1", 0, 10).unwrap(), "real");
+    assert_eq!(store.slice(&issued, 0, 10).unwrap(), "real");
+    let after = issued.replace("-1", "-2");
     assert!(matches!(
-        store.slice("r2", 0, 10),
+        store.slice(&after, 0, 10),
         Err(CompactError::UnknownHandle(_))
     ));
+    let zero = issued.replace("-1", "-0");
     assert!(matches!(
-        store.slice("r0", 0, 10),
+        store.slice(&zero, 0, 10),
         Err(CompactError::UnknownHandle(_))
     ));
+}
+
+#[test]
+fn a_handle_from_one_store_is_refused_by_another_even_after_it_has_issued_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let before_restart = RawStore::new(dir.path());
+    let old = before_restart
+        .tee("the output the model was told about")
+        .unwrap();
+
+    let after_restart = RawStore::new(dir.path());
+    let new = after_restart.tee("a different command's output").unwrap();
+
+    assert_ne!(old, new, "handles do not repeat across stores");
+    for count in 0..3 {
+        assert!(
+            matches!(
+                after_restart.slice(&old, 0, 10),
+                Err(CompactError::UnknownHandle(_))
+            ),
+            "attempt {count}"
+        );
+        after_restart.tee("more").unwrap();
+    }
+    assert_eq!(
+        before_restart.slice(&old, 0, 10).unwrap(),
+        "the output the model was told about"
+    );
 }
 
 #[cfg(unix)]

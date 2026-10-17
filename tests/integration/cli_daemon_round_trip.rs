@@ -82,8 +82,12 @@ fn assert_a_tool_call_answered(prompt_line: &str) {
 fn run_over_stdio_round_trips_a_real_prompt_with_a_tool_call() {
     let live = require_live();
     let worktree = worktree_with_a_secret_number();
+    let state = tempfile::tempdir().unwrap();
     let mut child = Command::new(binary_path())
-        .args(["--config", &live.config, "--model", &live.model, "run"])
+        .args(["--config", &live.config, "--model", &live.model])
+        .arg("--state")
+        .arg(state.path().join("state.sqlite"))
+        .arg("run")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

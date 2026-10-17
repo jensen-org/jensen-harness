@@ -2,17 +2,25 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use jensen_harness_core::agent::Session;
+use jensen_harness_core::budget::BudgetSettings;
 use jensen_harness_core::providers::config::ProviderRegistry;
 use jensen_harness_core::providers::{Provider, ProviderError};
 use jensen_harness_core::secrets::SecretSource;
+use jensen_harness_core::store::{Store, StoreError};
 use tokio::sync::Mutex;
+
+/// A provider and the `provider_id/model_id` address it was chosen by.
+pub struct ResolvedModel {
+    pub provider: Arc<dyn Provider>,
+    pub address: String,
+}
 
 /// Where a session's provider and model come from.
 pub trait ModelSource: Send + Sync {
     /// # Errors
     /// [`ProviderError`] when no model is chosen, the address is unknown, or
     /// its key is missing.
-    fn resolve(&self, address: Option<&str>) -> Result<(Arc<dyn Provider>, String), ProviderError>;
+    fn resolve(&self, address: Option<&str>) -> Result<ResolvedModel, ProviderError>;
 }
 
 /// One provider and model for every session.
@@ -22,11 +30,11 @@ pub struct FixedModel {
 }
 
 impl ModelSource for FixedModel {
-    fn resolve(
-        &self,
-        _address: Option<&str>,
-    ) -> Result<(Arc<dyn Provider>, String), ProviderError> {
-        Ok((Arc::clone(&self.provider), self.model.clone()))
+    fn resolve(&self, _address: Option<&str>) -> Result<ResolvedModel, ProviderError> {
+        Ok(ResolvedModel {
+            provider: Arc::clone(&self.provider),
+            address: format!("{}/{}", self.provider.id(), self.model),
+        })
     }
 }
 
@@ -38,13 +46,17 @@ pub struct ConfiguredModels {
 }
 
 impl ModelSource for ConfiguredModels {
-    fn resolve(&self, address: Option<&str>) -> Result<(Arc<dyn Provider>, String), ProviderError> {
+    fn resolve(&self, address: Option<&str>) -> Result<ResolvedModel, ProviderError> {
         let address = address.or(self.default_model.as_deref()).ok_or_else(|| {
             ProviderError::Config(
                 "no model was chosen: pass model, or set default_model in the config".to_string(),
             )
         })?;
-        self.registry.resolve(address, self.secrets.as_ref())
+        let (provider, _model) = self.registry.resolve(address, self.secrets.as_ref())?;
+        Ok(ResolvedModel {
+            provider,
+            address: address.to_string(),
+        })
     }
 }
 
@@ -58,23 +70,53 @@ pub struct LiveSession {
 /// a long run on one never blocks another.
 pub struct Engine {
     pub models: Box<dyn ModelSource>,
+    pub store: Store,
+    pub budget: BudgetSettings,
     pub sessions: Mutex<HashMap<String, Arc<Mutex<LiveSession>>>>,
 }
 
 impl Engine {
     #[must_use]
-    pub fn new(models: Box<dyn ModelSource>) -> Self {
+    pub fn new(models: Box<dyn ModelSource>, store: Store, budget: BudgetSettings) -> Self {
         Self {
             models,
+            store,
+            budget,
             sessions: Mutex::new(HashMap::new()),
         }
     }
 
-    #[must_use]
-    pub fn with_fixed_model(provider: Arc<dyn Provider>, model: impl Into<String>) -> Self {
-        Self::new(Box::new(FixedModel {
+    /// One provider and model, an in memory store and the built in budget:
+    /// for tests and for embedding.
+    ///
+    /// # Errors
+    /// [`StoreError`] when the in memory database cannot be prepared.
+    pub fn with_fixed_model(
+        provider: Arc<dyn Provider>,
+        model: impl Into<String>,
+    ) -> Result<Self, StoreError> {
+        Ok(Self::with_fixed_model_on(
             provider,
-            model: model.into(),
-        }))
+            model,
+            Store::in_memory()?,
+        ))
+    }
+
+    /// Like [`Engine::with_fixed_model`] over an existing store, so a second
+    /// engine over the same store stands in for a restarted daemon.
+    #[must_use]
+    pub fn with_fixed_model_on(
+        provider: Arc<dyn Provider>,
+        model: impl Into<String>,
+        store: Store,
+    ) -> Self {
+        Self::new(
+            Box::new(FixedModel {
+                provider,
+                model: model.into(),
+            }),
+            store,
+            BudgetSettings::default(),
+        )
     }
 }

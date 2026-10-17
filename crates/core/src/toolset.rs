@@ -170,6 +170,11 @@ impl ToolSet {
     }
 
     #[must_use]
+    pub fn root(&self) -> &Path {
+        self.worktree.root()
+    }
+
+    #[must_use]
     pub fn with_shell_timeout(mut self, timeout: Duration) -> Self {
         self.shell_timeout = timeout;
         self

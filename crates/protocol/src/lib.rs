@@ -171,16 +171,47 @@ pub fn classify(raw: &Value) -> Result<Frame, FrameError> {
     }
 }
 
+/// Hard caps. A field left out is not capped by this request; the daemon's
+/// configured caps, then its built in token cap, apply.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BudgetParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_micro_usd: Option<u64>,
+}
+
+/// `run.new`: open a budget scope that sessions can join, so they share its
+/// caps.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunNewParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<BudgetParams>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunNewResult {
+    pub run_id: String,
+}
+
 /// `session.new`: start a session bound to one worktree. `model` is a
 /// `provider_id/model_id` address and defaults to the daemon's own default;
-/// `max_turns` caps the model calls one prompt may spend.
+/// `max_turns` caps the model calls one prompt may spend; `run_id` joins a
+/// run opened with `run.new`; `budget` caps this session.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SessionNewParams {
     pub worktree: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<BudgetParams>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -190,6 +221,7 @@ pub struct SessionNewResult {
 
 /// `session.prompt`: send one user turn and run it to completion.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SessionPromptParams {
     pub session_id: String,
     pub message: String,
@@ -203,6 +235,7 @@ pub enum StopReason {
     StopSequence,
     Refusal,
     TurnLimit,
+    BudgetExhausted,
     Error,
 }
 
@@ -229,8 +262,18 @@ pub struct Savings {
 pub struct SessionPromptResult {
     pub stop_reason: StopReason,
     pub model_calls: u32,
+    pub cost_micro_usd: u64,
     pub usage: Usage,
     pub savings: Savings,
+}
+
+/// `session.resume`: continue a prompt that was cut short, by a provider
+/// error or a restart, from where the journal says it stopped. The result is
+/// the same as `session.prompt`'s.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionResumeParams {
+    pub session_id: String,
 }
 
 /// `session.update`: a notification streamed while a prompt is running.

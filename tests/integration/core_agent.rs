@@ -1,11 +1,12 @@
 use crate::common::{
-    Echo, Scripted, UnavailableSandbox, calls_tool, path_input, reply, says, tool_set,
-    tool_set_with, tool_use,
+    Echo, Scripted, UnavailableSandbox, calls_tool, default_budget, new_session, path_input, reply,
+    says, session_config, session_over, tool_set_with, tool_use,
 };
-use jensen_harness_core::agent::{AgentError, PromptStop, Session};
+use jensen_harness_core::agent::{AgentError, PromptStop};
 use jensen_harness_core::providers::{
     ContentBlock, ProviderError, Role, StopReason, ToolSpec, Usage,
 };
+use jensen_harness_core::store::Store;
 use jensen_harness_core::toolset::{ToolSet, ToolSetError};
 use serde_json::json;
 use std::fs;
@@ -25,7 +26,7 @@ fn result_of(turn: &jensen_harness_core::providers::Turn, index: usize) -> (&str
 #[tokio::test]
 async fn a_plain_answer_appends_both_turns_in_order() {
     let dir = tempdir().unwrap();
-    let mut session = Session::new("echo-model", tool_set(dir.path()), 5);
+    let mut session = new_session(dir.path(), 5).await;
     let outcome = session.prompt(&Echo, "hello").await.unwrap();
     assert_eq!(outcome.stop, PromptStop::EndTurn);
     assert_eq!(outcome.model_calls, 1);
@@ -50,7 +51,7 @@ async fn a_tool_call_runs_and_its_result_goes_back_before_the_final_answer() {
         ),
         says("done"),
     ]);
-    let mut session = Session::new("m", tool_set(dir.path()), 5);
+    let mut session = new_session(dir.path(), 5).await;
 
     let outcome = session.prompt(&provider, "fix it").await.unwrap();
 
@@ -92,7 +93,7 @@ async fn every_result_for_one_reply_comes_back_in_one_user_turn_in_call_order() 
         ),
         says("ok"),
     ]);
-    let mut session = Session::new("m", tool_set(dir.path()), 5);
+    let mut session = new_session(dir.path(), 5).await;
 
     session.prompt(&provider, "read both").await.unwrap();
 
@@ -127,7 +128,7 @@ async fn what_the_model_got_wrong_comes_back_as_an_error_it_can_read_and_the_loo
         ),
         says("understood"),
     ]);
-    let mut session = Session::new("m", tool_set(dir.path()), 5);
+    let mut session = new_session(dir.path(), 5).await;
 
     let outcome = session.prompt(&provider, "go").await.unwrap();
 
@@ -155,7 +156,7 @@ async fn a_model_that_never_stops_calling_tools_is_ended_at_the_turn_cap() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.txt"), "x").unwrap();
     let provider = Scripted::repeating(calls_tool("t", "read", path_input("a.txt")));
-    let mut session = Session::new("m", tool_set(dir.path()), 3);
+    let mut session = new_session(dir.path(), 3).await;
 
     let outcome = session.prompt(&provider, "loop").await.unwrap();
 
@@ -174,7 +175,7 @@ async fn pause_turn_resumes_and_refusal_and_max_tokens_stop() {
         ),
         says("done"),
     ]);
-    let mut session = Session::new("m", tool_set(dir.path()), 5);
+    let mut session = new_session(dir.path(), 5).await;
     let outcome = session.prompt(&paused, "go").await.unwrap();
     assert_eq!(
         (outcome.stop, outcome.model_calls),
@@ -187,7 +188,7 @@ async fn pause_turn_resumes_and_refusal_and_max_tokens_stop() {
         (StopReason::StopSequence, PromptStop::StopSequence),
     ] {
         let provider = Scripted::of(vec![reply(vec![], reason)]);
-        let mut session = Session::new("m", tool_set(dir.path()), 5);
+        let mut session = new_session(dir.path(), 5).await;
         assert_eq!(
             session.prompt(&provider, "go").await.unwrap().stop,
             expected
@@ -202,7 +203,7 @@ async fn a_provider_error_ends_the_prompt_without_an_assistant_turn() {
         provider: "scripted".to_string(),
         message: "429".to_string(),
     })]);
-    let mut session = Session::new("m", tool_set(dir.path()), 5);
+    let mut session = new_session(dir.path(), 5).await;
 
     let error = session.prompt(&provider, "go").await.unwrap_err();
 
@@ -218,7 +219,7 @@ async fn a_provider_error_ends_the_prompt_without_an_assistant_turn() {
 async fn a_tool_call_stop_with_no_tool_call_is_an_error_not_a_hang() {
     let dir = tempdir().unwrap();
     let provider = Scripted::of(vec![reply(vec![], StopReason::ToolUse)]);
-    let mut session = Session::new("m", tool_set(dir.path()), 5);
+    let mut session = new_session(dir.path(), 5).await;
     let error = session.prompt(&provider, "go").await.unwrap_err();
     assert!(matches!(
         error,
@@ -237,7 +238,12 @@ async fn when_the_harness_cannot_run_a_tool_the_run_ends_and_the_transcript_stay
         StopReason::ToolUse,
     )]);
     let tools = tool_set_with(dir.path(), Box::new(UnavailableSandbox));
-    let mut session = Session::new("m", tools, 5);
+    let mut session = session_over(
+        Store::in_memory().unwrap(),
+        tools,
+        session_config(5, default_budget()),
+    )
+    .await;
 
     let error = session.prompt(&provider, "go").await.unwrap_err();
 
@@ -266,7 +272,7 @@ async fn reading_a_large_file_costs_less_than_the_file_and_the_savings_are_repor
         calls_tool("t", "read", path_input("big.rs")),
         says("ok"),
     ]);
-    let mut session = Session::new("m", tool_set(dir.path()), 5);
+    let mut session = new_session(dir.path(), 5).await;
 
     let outcome = session.prompt(&provider, "look").await.unwrap();
 
@@ -284,7 +290,7 @@ async fn reading_a_large_file_costs_less_than_the_file_and_the_savings_are_repor
 async fn a_second_prompt_continues_the_same_transcript() {
     let dir = tempdir().unwrap();
     let provider = Scripted::of(vec![says("one"), says("two")]);
-    let mut session = Session::new("m", tool_set(dir.path()), 5);
+    let mut session = new_session(dir.path(), 5).await;
     session.prompt(&provider, "first").await.unwrap();
     session.prompt(&provider, "second").await.unwrap();
     assert_eq!(session.turns().len(), 4);

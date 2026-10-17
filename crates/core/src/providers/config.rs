@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use super::genai::{GenaiProvider, parse_adapter};
 use super::{Provider, ProviderError};
+use crate::budget::{BudgetSettings, Caps, PricingTable};
 use crate::secrets::SecretSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -42,15 +43,65 @@ pub struct ProviderEntry {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct BudgetFile {
+    max_tokens: Option<u64>,
+    max_cost_micro_usd: Option<u64>,
+    soft_percent: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConfigFile {
     default_model: Option<String>,
     providers: BTreeMap<String, ProviderEntry>,
+    #[serde(default)]
+    pricing: PricingTable,
+    budget: Option<BudgetFile>,
 }
 
 #[derive(Debug)]
 pub struct ProviderRegistry {
     default_model: Option<String>,
     providers: BTreeMap<String, ProviderEntry>,
+    budget: BudgetSettings,
+}
+
+fn budget_settings(file: &ConfigFile) -> Result<BudgetSettings, ProviderError> {
+    for address in file.pricing.addresses() {
+        let known = address
+            .split_once('/')
+            .is_some_and(|(provider, _model)| file.providers.contains_key(provider));
+        if !known {
+            return Err(ProviderError::Config(format!(
+                "pricing names {address:?}, which is not provider_id/model_id of a declared provider"
+            )));
+        }
+    }
+    let Some(budget) = &file.budget else {
+        return Ok(BudgetSettings {
+            pricing: file.pricing.clone(),
+            ..BudgetSettings::default()
+        });
+    };
+    if budget
+        .soft_percent
+        .is_some_and(|percent| !(1..=99).contains(&percent))
+    {
+        return Err(ProviderError::Config(
+            "budget soft_percent must be between 1 and 99".to_string(),
+        ));
+    }
+    let caps = Caps {
+        max_tokens: budget.max_tokens,
+        max_cost_micro_usd: budget.max_cost_micro_usd,
+    }
+    .validated()
+    .map_err(|error| ProviderError::Config(error.to_string()))?;
+    Ok(BudgetSettings {
+        pricing: file.pricing.clone(),
+        caps,
+        soft_percent: budget.soft_percent,
+    })
 }
 
 impl ProviderRegistry {
@@ -86,10 +137,17 @@ impl ProviderRegistry {
                 _ => {}
             }
         }
+        let budget = budget_settings(&file)?;
         Ok(Self {
             default_model: file.default_model,
             providers: file.providers,
+            budget,
         })
+    }
+
+    #[must_use]
+    pub fn budget_settings(&self) -> &BudgetSettings {
+        &self.budget
     }
 
     #[must_use]

@@ -16,6 +16,7 @@ use jensen_harness::rpc;
 use jensen_harness::socket::{current_uid, remove_stale_socket};
 use jensen_harness_core::providers::config::ProviderRegistry;
 use jensen_harness_core::secrets::{SystemSecrets, store_in_keychain};
+use jensen_harness_core::store::Store;
 use tokio::io::{BufReader, stdin, stdout};
 use tokio::net::UnixListener;
 
@@ -28,6 +29,9 @@ struct Cli {
     /// Path to providers.toml; defaults to the user config directory.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+    /// Path to the state database; defaults to the user data directory.
+    #[arg(long, global = true)]
+    state: Option<PathBuf>,
     /// Model as provider_id/model_id; defaults to `default_model` in the config.
     #[arg(long, global = true)]
     model: Option<String>,
@@ -88,7 +92,23 @@ fn auth_set(registry: &ProviderRegistry, provider: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_engine(registry: ProviderRegistry, model: Option<String>) -> anyhow::Result<Engine> {
+fn state_path(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    let base = dirs::data_dir().context("no user data directory exists on this platform")?;
+    Ok(base.join("jensen-harness").join("state.sqlite"))
+}
+
+fn build_engine(
+    registry: ProviderRegistry,
+    model: Option<String>,
+    state: Option<PathBuf>,
+) -> anyhow::Result<Engine> {
+    let path = state_path(state)?;
+    let store = Store::open(&path)
+        .with_context(|| format!("the state database {} could not be opened", path.display()))?;
+    let budget = registry.budget_settings().clone();
     let models = ConfiguredModels {
         default_model: model.or_else(|| registry.default_model().map(str::to_string)),
         registry,
@@ -97,7 +117,7 @@ fn build_engine(registry: ProviderRegistry, model: Option<String>) -> anyhow::Re
     if let Some(address) = models.default_model.as_deref() {
         models.resolve(Some(address))?;
     }
-    Ok(Engine::new(Box::new(models)))
+    Ok(Engine::new(Box::new(models), store, budget))
 }
 
 #[tokio::main]
@@ -113,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
     {
         return auth_set(&registry, provider);
     }
-    let engine = Arc::new(build_engine(registry, cli.model)?);
+    let engine = Arc::new(build_engine(registry, cli.model, cli.state)?);
     match cli.command {
         Command::Auth { .. } => {}
         Command::Run => {
