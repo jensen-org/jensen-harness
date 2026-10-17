@@ -20,6 +20,7 @@ mod workflow_rpc;
 mod workflow_run;
 mod workflow_spec;
 mod workflow_state;
+mod workflow_templates;
 
 mod core_agent;
 mod core_compact;

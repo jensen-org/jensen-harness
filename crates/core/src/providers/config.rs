@@ -57,6 +57,13 @@ struct BudgetFile {
     soft_percent: Option<u8>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LibraryFile {
+    #[serde(default)]
+    paths: Vec<std::path::PathBuf>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
@@ -66,6 +73,8 @@ struct ConfigFile {
     roles: BTreeMap<String, String>,
     #[serde(default)]
     forges: BTreeMap<String, ForgeEntry>,
+    #[serde(default)]
+    library: LibraryFile,
     #[serde(default)]
     pricing: PricingTable,
     budget: Option<BudgetFile>,
@@ -77,6 +86,7 @@ pub struct ProviderRegistry {
     providers: BTreeMap<String, ProviderEntry>,
     roles: BTreeMap<String, String>,
     forges: BTreeMap<String, ForgeEntry>,
+    library: Vec<std::path::PathBuf>,
     budget: BudgetSettings,
 }
 
@@ -179,6 +189,7 @@ impl ProviderRegistry {
             providers: file.providers,
             roles: file.roles,
             forges: file.forges,
+            library: file.library.paths,
             budget,
         })
     }
@@ -244,6 +255,11 @@ impl ProviderRegistry {
                 .clone()
                 .unwrap_or_else(|| provider_id.to_string()),
         ))
+    }
+
+    #[must_use]
+    pub fn library_paths(&self) -> &[std::path::PathBuf] {
+        &self.library
     }
 
     #[must_use]

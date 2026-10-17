@@ -124,6 +124,7 @@ pub struct Engine {
     pub sessions: Mutex<HashMap<String, Arc<Mutex<LiveSession>>>>,
     pub checkpoints: Arc<dyn RunStore>,
     pub workspaces: std::path::PathBuf,
+    pub library: Vec<std::path::PathBuf>,
     pub active_workflows: Mutex<HashMap<String, CancellationToken>>,
 }
 
@@ -141,7 +142,14 @@ impl Engine {
                 uuid::Uuid::new_v4()
             )),
             active_workflows: Mutex::new(HashMap::new()),
+            library: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_library(mut self, library: Vec<std::path::PathBuf>) -> Self {
+        self.library = library;
+        self
     }
 
     #[must_use]

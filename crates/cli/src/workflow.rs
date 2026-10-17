@@ -138,7 +138,12 @@ pub async fn workflow_start(
             return invalid_params(id, format!("workflow {}: {error}", file.display()));
         }
     };
-    let workflow = match jensen_harness_workflow::load(&yaml) {
+    let library = jensen_harness_workflow::library::Library::for_workflow(
+        &file,
+        &engine.library,
+        dirs::config_dir().map(|base| base.join("jensen-harness").join("agents")),
+    );
+    let workflow = match jensen_harness_workflow::load_with(&yaml, &library) {
         Ok(workflow) => workflow,
         Err(error) => return invalid_params(id, error.to_string()),
     };

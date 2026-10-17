@@ -1,0 +1,10 @@
+description: Reads what the work reads and reports findings, never changing a file.
+role: review
+prompt: Review the work against the task. Report concrete problems with their files.
+tools: read_only
+max_turns: 8
+inputs:
+  task: {}
+outputs:
+  findings:
+    schema: { type: array, items: { type: string } }

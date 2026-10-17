@@ -63,7 +63,11 @@ enum Command {
 #[derive(Subcommand)]
 enum WorkflowAction {
     /// Load a workflow file and report whether it is valid.
-    Validate { file: PathBuf },
+    Validate {
+        file: PathBuf,
+        #[arg(long)]
+        resolved: bool,
+    },
     /// Print a workflow file's graph in Graphviz DOT.
     Dot { file: PathBuf },
 }
@@ -71,15 +75,24 @@ enum WorkflowAction {
 fn load_workflow(file: &std::path::Path) -> anyhow::Result<jensen_harness_workflow::Workflow> {
     let yaml = std::fs::read_to_string(file)
         .with_context(|| format!("the workflow {} could not be read", file.display()))?;
-    jensen_harness_workflow::load(&yaml)
+    let library = jensen_harness_workflow::library::Library::for_workflow(
+        file,
+        &[],
+        dirs::config_dir().map(|base| base.join("jensen-harness").join("agents")),
+    );
+    jensen_harness_workflow::load_with(&yaml, &library)
         .with_context(|| format!("the workflow {} is invalid", file.display()))
 }
 
 fn workflow_command(action: &WorkflowAction) -> anyhow::Result<()> {
     let mut out = std::io::stdout();
     match action {
-        WorkflowAction::Validate { file } => {
+        WorkflowAction::Validate { file, resolved } => {
             let workflow = load_workflow(file)?;
+            if *resolved {
+                writeln!(out, "{}", serde_json::to_string_pretty(workflow.spec())?)?;
+                return Ok(());
+            }
             writeln!(
                 out,
                 "ok {} {} ({} waves)",
@@ -157,6 +170,7 @@ fn build_engine(
     let store = Store::open(&path)
         .with_context(|| format!("the state database {} could not be opened", path.display()))?;
     let budget = registry.budget_settings().clone();
+    let library = registry.library_paths().to_vec();
     let models = ConfiguredModels {
         default_model: model.or_else(|| registry.default_model().map(str::to_string)),
         registry,
@@ -185,6 +199,7 @@ fn build_engine(
     workspaces.push(".workspaces");
     Ok(Engine::new(Box::new(models), store, budget)
         .with_checkpoints(Arc::new(checkpoints))
+        .with_library(library)
         .with_workspaces(PathBuf::from(workspaces)))
 }
 

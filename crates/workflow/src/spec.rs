@@ -85,6 +85,123 @@ pub struct AgentNode {
     pub max_turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<BudgetSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp: BTreeMap<String, McpAttach>,
+    #[serde(default, skip_serializing_if = "ContextSpec::is_empty")]
+    pub context: ContextSpec,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpAttach {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InheritMode {
+    #[default]
+    Full,
+    Summary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InheritSpec {
+    pub channel: String,
+    #[serde(default)]
+    pub mode: InheritMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FetchMode {
+    #[default]
+    Eager,
+    Lazy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TreeView {
+    Outline,
+    Symbols,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LspQuery {
+    Diagnostics,
+    Symbols,
+    Definition,
+    References,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum FetchSource {
+    Skill {
+        name: String,
+    },
+    Treesitter {
+        paths: Vec<String>,
+        view: TreeView,
+    },
+    Lsp {
+        server: String,
+        query: LspQuery,
+        paths: Vec<String>,
+    },
+    Mcp {
+        server: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resource: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        #[serde(default)]
+        args: Value,
+    },
+    Files {
+        globs: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FetchSpec {
+    #[serde(flatten)]
+    pub source: FetchSource,
+    #[serde(default)]
+    pub mode: FetchMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContextSpec {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inherit: Vec<InheritSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub from_nodes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fetch: Vec<FetchSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u64>,
+}
+
+impl ContextSpec {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inherit.is_empty()
+            && self.from_nodes.is_empty()
+            && self.fetch.is_empty()
+            && self.max_context_tokens.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

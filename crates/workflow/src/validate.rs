@@ -6,6 +6,8 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::library::Library;
+use crate::spec::FetchSource;
 use crate::spec::{NodeSpec, Reducer, SPEC_VERSION, ToolAccess, WorkflowSpec};
 
 #[derive(Debug, Error)]
@@ -78,6 +80,31 @@ pub enum SpecError {
         from: String,
         reason: String,
     },
+    #[error("node `{node}` has a bad context: {reason}")]
+    Context { node: String, reason: String },
+    #[error("node `{node}` uses template `{template}`, which no library holds")]
+    TemplateMissing { node: String, template: String },
+    #[error("node `{node}` uses template `{template}`, found twice: {first} and {second}")]
+    TemplateAmbiguous {
+        node: String,
+        template: String,
+        first: String,
+        second: String,
+    },
+    #[error("node `{node}` uses templates in a cycle: {chain}")]
+    TemplateCycle { node: String, chain: String },
+    #[error("template `{template}` is invalid: {message}")]
+    TemplateInvalid { template: String, message: String },
+    #[error(
+        "node `{node}` from template `{template}` declares {declared} for channel `{channel}`, but the workflow says {found}"
+    )]
+    TemplateOutputMismatch {
+        node: String,
+        template: String,
+        channel: String,
+        declared: String,
+        found: String,
+    },
     #[error("loop `{loop_node}` body node `{node}` is not allowed: {reason}")]
     LoopBody {
         loop_node: String,
@@ -96,8 +123,13 @@ pub struct Workflow {
 }
 
 pub fn load(yaml: &str) -> Result<Workflow, SpecError> {
+    load_with(yaml, &Library::default())
+}
+
+pub fn load_with(yaml: &str, library: &Library) -> Result<Workflow, SpecError> {
+    let resolved = crate::library::resolve(yaml, library)?;
     let spec: WorkflowSpec =
-        serde_saphyr::from_str(yaml).map_err(|error| SpecError::Yaml(error.to_string()))?;
+        serde_json::from_value(resolved).map_err(|error| SpecError::Yaml(error.to_string()))?;
     Workflow::new(spec)
 }
 
@@ -130,6 +162,7 @@ impl Workflow {
         })?;
         check_state_flow(&spec, &owners, &graph, &index)?;
         check_parallelism(&spec, &owners, &graph, &index)?;
+        check_context(&spec, &graph, &index)?;
         let promoted = check_promotion(&spec, &graph, &index)?;
         let waves = waves(&graph, &order);
         let scopes = writer_scopes(&spec, &owners, &graph, &index, &waves, &promoted);
@@ -683,4 +716,53 @@ fn reachable_without(
         );
     }
     false
+}
+
+fn check_context(
+    spec: &WorkflowSpec,
+    graph: &DiGraph<String, ()>,
+    index: &Index,
+) -> Result<(), SpecError> {
+    for (id, node) in &spec.nodes {
+        let NodeSpec::Agent(agent) = node else {
+            continue;
+        };
+        let bad = |reason: String| SpecError::Context {
+            node: id.clone(),
+            reason,
+        };
+        for upstream in &agent.context.from_nodes {
+            if !index.contains_key(upstream) || upstream == id {
+                return Err(bad(format!(
+                    "from_nodes names `{upstream}`, which is not another node"
+                )));
+            }
+            if !is_ancestor(graph, index, upstream, id) {
+                return Err(bad(format!(
+                    "from_nodes names `{upstream}`, which does not run before it"
+                )));
+            }
+        }
+        for fetch in &agent.context.fetch {
+            let empty = match &fetch.source {
+                FetchSource::Treesitter { paths, .. } | FetchSource::Lsp { paths, .. } => {
+                    paths.is_empty()
+                }
+                FetchSource::Files { globs } => globs.is_empty(),
+                FetchSource::Skill { name } => name.is_empty(),
+                FetchSource::Mcp { resource, tool, .. } => resource.is_none() == tool.is_none(),
+            };
+            if empty {
+                return Err(bad("a fetch source is missing what to fetch (paths, globs, a name, or exactly one of resource and tool)".to_owned()));
+            }
+        }
+        for name in agent.skills.iter().chain(agent.mcp.keys()) {
+            if name.is_empty() {
+                return Err(bad(
+                    "an attached skill or server has an empty name".to_owned()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
