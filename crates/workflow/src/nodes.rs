@@ -12,7 +12,8 @@ use jensen_harness_core::store::{
     EventKind, LedgerError, NewEvent, NewScope, ScopeKind, Store, StoreError,
 };
 use jensen_harness_core::toolset::Access;
-use jensen_harness_extensions::SkillProvider;
+use jensen_harness_extensions::mcp::connect as mcp_connect;
+use jensen_harness_extensions::{McpError, SkillProvider};
 use jensen_harness_promote::forge::open_request;
 use jensen_harness_promote::push::push;
 use jensen_harness_promote::{Finding, GateConfig, Gates, PromoteError, Provenance};
@@ -326,6 +327,23 @@ async fn run_agent(
                 source,
             })?;
         tools = tools.with_provider(Arc::new(SkillProvider::new(skills)));
+    }
+    for (server, attach) in &node.mcp {
+        let mcp_error = |source: McpError| RunError::Mcp {
+            node: id.to_owned(),
+            source,
+        };
+        let directory = shared
+            .host
+            .extensions()
+            .mcp
+            .as_ref()
+            .ok_or_else(|| mcp_error(McpError::Unknown(server.clone())))?;
+        let spec = directory.server(server).map_err(mcp_error)?;
+        let connected = mcp_connect(&spec, &attach.tools, &tools)
+            .await
+            .map_err(mcp_error)?;
+        tools = tools.with_provider(Arc::new(connected));
     }
     let provider: Arc<dyn Provider> = Arc::clone(&binding.provider);
     let stop = match Recovered::load(&shared.store, &session_id).await {

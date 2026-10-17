@@ -4,7 +4,7 @@ use std::sync::Arc;
 use jensen_harness_core::budget::BudgetSettings;
 use jensen_harness_core::budget::Caps;
 use jensen_harness_core::toolset::{Access, ToolSet};
-use jensen_harness_extensions::{Extensions, SkillCatalog};
+use jensen_harness_extensions::{Extensions, McpDirectory, McpError, SkillCatalog};
 use jensen_harness_promote::Isolation;
 use jensen_harness_promote::forge::ForgeTarget;
 use jensen_harness_protocol::{
@@ -67,6 +67,14 @@ impl Host for EngineHost {
     }
 }
 
+struct EngineMcp(Arc<Engine>);
+
+impl McpDirectory for EngineMcp {
+    fn server(&self, name: &str) -> Result<jensen_harness_extensions::McpServerSpec, McpError> {
+        self.0.models.mcp_server(name)
+    }
+}
+
 fn skill_roots(engine: &Engine, worktree: &Path) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
     roots.extend(dirs::config_dir().map(|base| base.join("jensen-harness").join("skills")));
@@ -89,7 +97,10 @@ fn runner(engine: &Arc<Engine>, worktree: PathBuf) -> Result<Runner, RunError> {
         host: Arc::new(EngineHost {
             engine: Arc::clone(engine),
             isolation: Isolation::open(&worktree, &engine.workspaces).ok(),
-            extensions: Extensions { skills },
+            extensions: Extensions {
+                skills,
+                mcp: Some(Arc::new(EngineMcp(Arc::clone(engine)))),
+            },
             worktree,
         }),
         checkpoints: Arc::clone(&engine.checkpoints),

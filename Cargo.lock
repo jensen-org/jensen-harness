@@ -4034,6 +4034,7 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -4071,6 +4072,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "jensen-harness-testkit-mcp"
+version = "0.1.0"
+dependencies = [
+ "rmcp",
+ "serde",
+ "tokio",
 ]
 
 [[package]]

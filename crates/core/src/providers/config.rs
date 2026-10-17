@@ -57,6 +57,49 @@ struct BudgetFile {
     soft_percent: Option<u8>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpNetwork {
+    #[default]
+    None,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAccess {
+    #[default]
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerEntry {
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env_allow: Vec<String>,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub network: McpNetwork,
+    #[serde(default)]
+    pub access: McpAccess,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    pub timeout_secs: Option<u64>,
+    pub api_key_env: Option<String>,
+    pub api_key_keychain: Option<KeychainRef>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpFile {
+    #[serde(default)]
+    servers: BTreeMap<String, McpServerEntry>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LibraryFile {
@@ -85,6 +128,8 @@ struct ConfigFile {
     #[serde(default)]
     skills: SkillsFile,
     #[serde(default)]
+    mcp: McpFile,
+    #[serde(default)]
     pricing: PricingTable,
     budget: Option<BudgetFile>,
 }
@@ -97,6 +142,7 @@ pub struct ProviderRegistry {
     forges: BTreeMap<String, ForgeEntry>,
     library: Vec<std::path::PathBuf>,
     allow_project_skills: bool,
+    mcp_servers: BTreeMap<String, McpServerEntry>,
     budget: BudgetSettings,
 }
 
@@ -181,6 +227,25 @@ impl ProviderRegistry {
                 )));
             }
         }
+        for (name, entry) in &file.mcp.servers {
+            if entry.command.is_some() == entry.url.is_some() {
+                return Err(ProviderError::Config(format!(
+                    "mcp server {name} needs exactly one of command and url"
+                )));
+            }
+            if entry.api_key_env.is_some() && entry.api_key_keychain.is_some() {
+                return Err(ProviderError::Config(format!(
+                    "mcp server {name} takes at most one of api_key_env and api_key_keychain"
+                )));
+            }
+            if entry.command.is_some()
+                && (entry.api_key_env.is_some() || entry.api_key_keychain.is_some())
+            {
+                return Err(ProviderError::Config(format!(
+                    "mcp server {name} runs as a command; pass a token with env_allow instead"
+                )));
+            }
+        }
         for (name, entry) in &file.forges {
             if !matches!(name.as_str(), "github" | "gitlab") {
                 return Err(ProviderError::Config(format!(
@@ -201,6 +266,7 @@ impl ProviderRegistry {
             forges: file.forges,
             library: file.library.paths,
             allow_project_skills: file.skills.allow_project,
+            mcp_servers: file.mcp.servers,
             budget,
         })
     }
@@ -228,6 +294,26 @@ impl ProviderRegistry {
     /// [`ProviderError::Config`] for a provider that reads its key from the
     /// environment instead.
     pub fn keychain_location(&self, provider_id: &str) -> Result<(String, String), ProviderError> {
+        if !self.providers.contains_key(provider_id)
+            && !self.forges.contains_key(provider_id)
+            && let Some(server) = self.mcp_servers.get(provider_id)
+        {
+            let reference = server.api_key_keychain.as_ref().ok_or_else(|| {
+                ProviderError::Config(format!(
+                    "mcp server {provider_id} does not read its token from the keychain"
+                ))
+            })?;
+            return Ok((
+                reference
+                    .service
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_KEYCHAIN_SERVICE.to_string()),
+                reference
+                    .user
+                    .clone()
+                    .unwrap_or_else(|| format!("mcp-{provider_id}")),
+            ));
+        }
         if !self.providers.contains_key(provider_id)
             && let Some(forge) = self.forges.get(provider_id)
         {
@@ -266,6 +352,53 @@ impl ProviderRegistry {
                 .clone()
                 .unwrap_or_else(|| provider_id.to_string()),
         ))
+    }
+
+    #[must_use]
+    pub fn mcp_server(&self, name: &str) -> Option<&McpServerEntry> {
+        self.mcp_servers.get(name)
+    }
+
+    /// # Errors
+    /// [`ProviderError::MissingApiKey`] when the token is not there.
+    pub fn mcp_token(
+        &self,
+        name: &str,
+        secrets: &dyn SecretSource,
+    ) -> Result<Option<String>, ProviderError> {
+        let entry = self
+            .mcp_servers
+            .get(name)
+            .ok_or_else(|| ProviderError::UnknownProvider(name.to_string()))?;
+        if let Some(variable) = &entry.api_key_env {
+            return secrets
+                .env(variable)
+                .map(Some)
+                .ok_or_else(|| ProviderError::MissingApiKey {
+                    provider: name.to_string(),
+                    hint: format!("set the {variable} environment variable"),
+                });
+        }
+        let Some(reference) = &entry.api_key_keychain else {
+            return Ok(None);
+        };
+        let service = reference
+            .service
+            .clone()
+            .unwrap_or_else(|| DEFAULT_KEYCHAIN_SERVICE.to_string());
+        let user = reference
+            .user
+            .clone()
+            .unwrap_or_else(|| format!("mcp-{name}"));
+        secrets
+            .keychain(&service, &user)?
+            .map(Some)
+            .ok_or_else(|| ProviderError::MissingApiKey {
+                provider: name.to_string(),
+                hint: format!(
+                    "store it with `jensen-harness auth set {name}` (keychain {service}/{user})"
+                ),
+            })
     }
 
     #[must_use]

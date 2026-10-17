@@ -45,6 +45,7 @@ mod core_tools_grep;
 mod core_tools_read;
 mod core_tools_shell;
 mod ext_host;
+mod ext_mcp;
 mod ext_skills;
 
 mod cli_binary_crash_resume;

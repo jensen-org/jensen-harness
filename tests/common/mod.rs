@@ -285,3 +285,27 @@ pub fn with_usage(mut response: CompletionResponse, usage: Usage) -> CompletionR
     response.usage = usage;
     response
 }
+
+pub fn testkit_mcp_path() -> PathBuf {
+    static BUILT: std::sync::Once = std::sync::Once::new();
+    BUILT.call_once(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let status = std::process::Command::new(cargo)
+            .args(["build", "--quiet", "-p", "jensen-harness-testkit-mcp"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .expect("cargo can be run to build the fixture server");
+        assert!(status.success(), "building the fixture MCP server failed");
+    });
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    for profile in ["debug", "release"] {
+        let candidate = target.join(profile).join("jensen-testkit-mcp");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    panic!(
+        "the fixture MCP server was not found under {}",
+        target.display()
+    );
+}

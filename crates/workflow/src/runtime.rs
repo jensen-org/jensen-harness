@@ -631,6 +631,24 @@ impl Runner {
                         node: id.clone(),
                         source,
                     })?;
+                for server in agent.mcp.keys() {
+                    let directory =
+                        shared
+                            .host
+                            .extensions()
+                            .mcp
+                            .as_ref()
+                            .ok_or_else(|| RunError::Mcp {
+                                node: id.clone(),
+                                source: jensen_harness_extensions::McpError::Unknown(
+                                    server.clone(),
+                                ),
+                            })?;
+                    directory.server(server).map_err(|source| RunError::Mcp {
+                        node: id.clone(),
+                        source,
+                    })?;
+                }
             }
         }
         let mut base_branch = None;

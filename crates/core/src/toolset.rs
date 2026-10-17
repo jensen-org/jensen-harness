@@ -7,7 +7,7 @@
 //! harness itself (the sandbox is unavailable, the raw store cannot be
 //! written) is a typed error that ends the run.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -218,6 +218,33 @@ impl ToolSet {
             shell_timeout: shell::DEFAULT_TIMEOUT,
             read_only: false,
         }
+    }
+
+    /// # Errors
+    /// [`ToolSetError::Sandbox`] when the policy cannot be applied.
+    pub fn confine_process(
+        &self,
+        program: &str,
+        args: &[String],
+        network: sandbox::NetworkPolicy,
+        writable: bool,
+    ) -> Result<(sandbox::Confined, PathBuf), ToolSetError> {
+        let mut policy = self.policy.clone();
+        policy.network = network;
+        if !writable {
+            policy.extra_rules.insert(
+                0,
+                sandbox::FsRule::new(policy.worktree.clone(), sandbox::FsMode::ReadOnly),
+            );
+        }
+        std::fs::create_dir_all(&policy.scratch)
+            .map_err(|error| ToolSetError::Infrastructure(error.to_string()))?;
+        let scratch = policy.scratch.clone();
+        let confined = self
+            .sandbox
+            .confine(&policy, program, args)
+            .map_err(|error| ToolSetError::Sandbox(error.to_string()))?;
+        Ok((confined, scratch))
     }
 
     #[must_use]

@@ -1,0 +1,19 @@
+[package]
+name = "jensen-harness-testkit-mcp"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "jensen-testkit-mcp"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "3.5.1", features = ["server", "macros", "transport-io", "schemars"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs"] }
+
+[lints]
+workspace = true

@@ -45,6 +45,24 @@ api_key_env = "GITLAB_TOKEN"
 [skills]
 allow_project = false
 
+# MCP servers are declared here, once, by you. A workflow can attach one by
+# name but never defines a command. A stdio server runs inside the OS sandbox
+# of the node that attaches it, with only the listed environment variables,
+# the network closed unless you open it, and its worktree read only unless you
+# say read_write. `tools` limits which of its tools any node can see.
+[mcp.servers.excalidraw]
+command = "excalidraw-mcp"
+args = ["--stdio"]
+env_allow = []
+network = "none"
+access = "read_only"
+tools = []
+
+[mcp.servers.figma]
+url = "https://mcp.figma.com/mcp"
+network = "full"
+api_key_keychain = {}
+
 # Prices are integer micro dollars per million tokens. These are examples only:
 # copy the current numbers from your provider's price list and bump the version.
 [pricing]

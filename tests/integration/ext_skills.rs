@@ -267,6 +267,7 @@ async fn an_attached_skill_reaches_the_model_as_a_description_and_a_tool() {
     let scripted = Arc::new(Scripted::of(vec![says("done")]));
     let extensions = Extensions {
         skills: catalog(dir.path()),
+        ..Extensions::default()
     };
 
     let report = run(

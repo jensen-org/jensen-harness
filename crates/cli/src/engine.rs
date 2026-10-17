@@ -4,12 +4,16 @@ use std::sync::Arc;
 use jensen_harness_core::agent::Session;
 use jensen_harness_core::budget::BudgetSettings;
 use jensen_harness_core::providers::config::ProviderRegistry;
+use jensen_harness_core::providers::config::{McpAccess, McpNetwork};
 use jensen_harness_core::providers::{Provider, ProviderError};
+use jensen_harness_core::sandbox::NetworkPolicy;
 use jensen_harness_core::secrets::SecretSource;
 use jensen_harness_core::store::{Store, StoreError};
+use jensen_harness_extensions::{McpError, McpServerSpec, McpTransportSpec, Secret as McpSecret};
 use jensen_harness_promote::PromoteError;
 use jensen_harness_promote::forge::{ForgeKind, ForgeTarget, Secret, parse_remote};
 use jensen_harness_workflow::{CancellationToken, MemoryRunStore, RunError, RunStore};
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 /// A provider and the `provider_id/model_id` address it was chosen by.
@@ -28,6 +32,8 @@ pub trait ModelSource: Send + Sync {
     fn role(&self, role: &str) -> Option<String>;
 
     fn forge_target(&self, remote_url: &str) -> Result<ForgeTarget, RunError>;
+
+    fn mcp_server(&self, name: &str) -> Result<McpServerSpec, McpError>;
 }
 
 /// One provider and model for every session.
@@ -37,6 +43,10 @@ pub struct FixedModel {
 }
 
 impl ModelSource for FixedModel {
+    fn mcp_server(&self, name: &str) -> Result<McpServerSpec, McpError> {
+        Err(McpError::Unknown(name.to_owned()))
+    }
+
     fn forge_target(&self, remote_url: &str) -> Result<ForgeTarget, RunError> {
         Err(PromoteError::UnknownForge(remote_url.to_owned()).into())
     }
@@ -61,6 +71,51 @@ pub struct ConfiguredModels {
 }
 
 impl ModelSource for ConfiguredModels {
+    fn mcp_server(&self, name: &str) -> Result<McpServerSpec, McpError> {
+        let entry = self
+            .registry
+            .mcp_server(name)
+            .ok_or_else(|| McpError::Unknown(name.to_owned()))?;
+        let config = |message: String| McpError::Config {
+            server: name.to_owned(),
+            message,
+        };
+        let transport = match (&entry.command, &entry.url) {
+            (Some(command), None) => McpTransportSpec::Stdio {
+                command: command.clone(),
+                args: entry.args.clone(),
+                env: entry
+                    .env_allow
+                    .iter()
+                    .filter_map(|key| self.secrets.env(key).map(|value| (key.clone(), value)))
+                    .collect(),
+            },
+            (None, Some(url)) => McpTransportSpec::Http {
+                url: url.clone(),
+                token: self
+                    .registry
+                    .mcp_token(name, self.secrets.as_ref())
+                    .map_err(|error| config(error.to_string()))?
+                    .map(McpSecret::new),
+            },
+            _ => return Err(config("needs exactly one of command and url".to_owned())),
+        };
+        Ok(McpServerSpec {
+            name: name.to_owned(),
+            transport,
+            network: match entry.network {
+                McpNetwork::None => NetworkPolicy::None,
+                McpNetwork::Full => NetworkPolicy::Full,
+            },
+            writable: entry.access == McpAccess::ReadWrite,
+            tools: entry.tools.clone(),
+            timeout: entry.timeout_secs.map_or(
+                jensen_harness_extensions::mcp::DEFAULT_TIMEOUT,
+                Duration::from_secs,
+            ),
+        })
+    }
+
     fn forge_target(&self, remote_url: &str) -> Result<ForgeTarget, RunError> {
         let remote = parse_remote(remote_url)?;
         for (name, kind, default_host) in [
