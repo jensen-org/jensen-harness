@@ -7,7 +7,7 @@ use tokio::io::BufReader;
 
 #[tokio::test]
 async fn a_new_session_then_a_prompt_round_trips() {
-    let engine = Arc::new(Engine::new(Box::new(Echo)));
+    let engine = Arc::new(Engine::new(Arc::new(Echo), "echo-model"));
     let input = format!(
         "{}\n",
         serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "session.new", "params": {}})
@@ -44,7 +44,7 @@ async fn a_new_session_then_a_prompt_round_trips() {
 
 #[tokio::test]
 async fn an_unknown_method_is_reported_as_a_jsonrpc_error_not_a_dropped_connection() {
-    let engine = Arc::new(Engine::new(Box::new(Echo)));
+    let engine = Arc::new(Engine::new(Arc::new(Echo), "echo-model"));
     let input = format!(
         "{}\n",
         serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "nope", "params": {}})

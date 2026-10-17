@@ -12,6 +12,8 @@ mod protocol_frame;
 
 mod core_agent;
 mod core_providers_anthropic;
+mod core_providers_config;
+mod core_providers_genai;
 mod core_sandbox;
 mod core_sandbox_bubblewrap;
 mod core_sandbox_seatbelt;

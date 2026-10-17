@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use jensen_harness_core::providers::{
-    CompletionRequest, CompletionResponse, Provider, ProviderError, StopReason,
+    CompletionRequest, CompletionResponse, ContentBlock, Provider, ProviderError, StopReason, Usage,
 };
 use jensen_harness_core::sandbox::{
     Confined, EnforcementReport, Sandbox, SandboxError, SandboxPolicy,
@@ -11,6 +11,7 @@ use jensen_harness_core::sandbox::{
 
 /// Echoes the last user turn back, prefixed, so a test can assert on
 /// exactly what reached the provider without a real model call.
+#[derive(Debug)]
 pub struct Echo;
 
 #[async_trait]
@@ -26,11 +27,12 @@ impl Provider for Echo {
         let last = request
             .turns
             .last()
-            .map(|turn| turn.text.clone())
+            .map(|turn| turn.plain_text())
             .unwrap_or_default();
         Ok(CompletionResponse {
-            text: format!("echo: {last}"),
+            content: vec![ContentBlock::Text(format!("echo: {last}"))],
             stop_reason: StopReason::EndTurn,
+            usage: Usage::default(),
         })
     }
 }

@@ -192,6 +192,8 @@ pub struct SessionPromptParams {
 pub enum StopReason {
     EndTurn,
     MaxTokens,
+    StopSequence,
+    Refusal,
     Error,
 }
 

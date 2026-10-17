@@ -7,12 +7,12 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use jensen_harness::engine::Engine;
 use jensen_harness::rpc;
 use jensen_harness::socket::{current_uid, remove_stale_socket};
-use jensen_harness_core::providers::anthropic::AnthropicProvider;
-use jensen_harness_core::providers::require_api_key;
+use jensen_harness_core::providers::config::ProviderRegistry;
 use tokio::io::{BufReader, stdin, stdout};
 use tokio::net::UnixListener;
 
@@ -22,6 +22,12 @@ use tokio::net::UnixListener;
     about = "A standalone, model-provider-direct agent harness"
 )]
 struct Cli {
+    /// Path to providers.toml; defaults to the user config directory.
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    /// Model as provider_id/model_id; defaults to `default_model` in the config.
+    #[arg(long, global = true)]
+    model: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -37,15 +43,24 @@ enum Command {
     Run,
 }
 
-fn build_engine() -> anyhow::Result<Engine> {
-    let api_key = require_api_key("anthropic", "ANTHROPIC_API_KEY")?;
-    let provider = AnthropicProvider::new(
-        "anthropic",
-        "https://api.anthropic.com",
-        api_key,
-        "claude-haiku-5-5",
-    );
-    Ok(Engine::new(Box::new(provider)))
+fn config_path(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    let base = dirs::config_dir().context("no user config directory exists on this platform")?;
+    Ok(base.join("jensen-harness").join("providers.toml"))
+}
+
+fn build_engine(config: Option<PathBuf>, model: Option<String>) -> anyhow::Result<Engine> {
+    let path = config_path(config)?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("the provider config {} could not be read", path.display()))?;
+    let registry = ProviderRegistry::from_toml(&text)?;
+    let address = model
+        .or_else(|| registry.default_model().map(str::to_string))
+        .context("no model was chosen: pass --model or set default_model in the config")?;
+    let (provider, model_id) = registry.resolve(&address, &|name| std::env::var(name).ok())?;
+    Ok(Engine::new(provider, model_id))
 }
 
 #[tokio::main]
@@ -54,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
-    let engine = std::sync::Arc::new(build_engine()?);
+    let engine = std::sync::Arc::new(build_engine(cli.config, cli.model)?);
     match cli.command {
         Command::Run => {
             let reader = BufReader::new(stdin());

@@ -21,6 +21,8 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
+genai = "0.6"
+toml = "1"
 
 [lints]
 workspace = true

@@ -76,7 +76,7 @@ async fn session_new(engine: &Engine, id: RequestId) -> Response {
     let session_id = uuid::Uuid::new_v4().to_string();
     engine.sessions.lock().await.insert(
         session_id.clone(),
-        jensen_harness_core::agent::Session::new(),
+        jensen_harness_core::agent::Session::new(engine.model.clone()),
     );
     let result = SessionNewResult { session_id };
     Response::ok(id, json!(result))
@@ -112,10 +112,20 @@ async fn session_prompt(engine: &Engine, id: RequestId, params: Option<Value>) -
         .prompt(engine.provider.as_ref(), &params.message)
         .await
     {
-        Ok(stop_reason) => {
+        Ok((stop_reason, _usage)) => {
             let stop_reason = match stop_reason {
                 EngineStopReason::EndTurn => StopReason::EndTurn,
                 EngineStopReason::MaxTokens => StopReason::MaxTokens,
+                EngineStopReason::StopSequence => StopReason::StopSequence,
+                EngineStopReason::Refusal => StopReason::Refusal,
+                EngineStopReason::ToolUse | EngineStopReason::PauseTurn => {
+                    return Response::err(
+                        id,
+                        ResponseError::internal(
+                            "the model asked to continue, which this session cannot do yet",
+                        ),
+                    );
+                }
             };
             Response::ok(id, json!(SessionPromptResult { stop_reason }))
         }
