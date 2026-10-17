@@ -171,9 +171,17 @@ pub fn classify(raw: &Value) -> Result<Frame, FrameError> {
     }
 }
 
-/// `session.new`: start a session. No parameters in phase 1.
+/// `session.new`: start a session bound to one worktree. `model` is a
+/// `provider_id/model_id` address and defaults to the daemon's own default;
+/// `max_turns` caps the model calls one prompt may spend.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SessionNewParams {}
+pub struct SessionNewParams {
+    pub worktree: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionNewResult {
@@ -194,12 +202,35 @@ pub enum StopReason {
     MaxTokens,
     StopSequence,
     Refusal,
+    TurnLimit,
     Error,
+}
+
+/// Tokens billed for one prompt, in separate buckets: `input_tokens`
+/// excludes the cache buckets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+}
+
+/// What the token saving layer kept out of the context during one prompt,
+/// as estimates: tokens the raw tool output would have cost, and tokens
+/// actually sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Savings {
+    pub raw_tokens: u64,
+    pub sent_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionPromptResult {
     pub stop_reason: StopReason,
+    pub model_calls: u32,
+    pub usage: Usage,
+    pub savings: Savings,
 }
 
 /// `session.update`: a notification streamed while a prompt is running.

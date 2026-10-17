@@ -7,10 +7,11 @@
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use jensen_harness::engine::Engine;
+use jensen_harness::engine::{ConfiguredModels, Engine, ModelSource};
 use jensen_harness::rpc;
 use jensen_harness::socket::{current_uid, remove_stale_socket};
 use jensen_harness_core::providers::config::ProviderRegistry;
@@ -87,12 +88,16 @@ fn auth_set(registry: &ProviderRegistry, provider: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_engine(registry: &ProviderRegistry, model: Option<String>) -> anyhow::Result<Engine> {
-    let address = model
-        .or_else(|| registry.default_model().map(str::to_string))
-        .context("no model was chosen: pass --model or set default_model in the config")?;
-    let (provider, model_id) = registry.resolve(&address, &SystemSecrets)?;
-    Ok(Engine::new(provider, model_id))
+fn build_engine(registry: ProviderRegistry, model: Option<String>) -> anyhow::Result<Engine> {
+    let models = ConfiguredModels {
+        default_model: model.or_else(|| registry.default_model().map(str::to_string)),
+        registry,
+        secrets: Arc::new(SystemSecrets),
+    };
+    if let Some(address) = models.default_model.as_deref() {
+        models.resolve(Some(address))?;
+    }
+    Ok(Engine::new(Box::new(models)))
 }
 
 #[tokio::main]
@@ -108,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
     {
         return auth_set(&registry, provider);
     }
-    let engine = std::sync::Arc::new(build_engine(&registry, cli.model)?);
+    let engine = Arc::new(build_engine(registry, cli.model)?);
     match cli.command {
         Command::Auth { .. } => {}
         Command::Run => {
@@ -143,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     }
                 }
-                let engine = std::sync::Arc::clone(&engine);
+                let engine = Arc::clone(&engine);
                 tokio::spawn(async move {
                     let (read_half, write_half) = stream.into_split();
                     let reader = BufReader::new(read_half);

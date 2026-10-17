@@ -1675,6 +1675,7 @@ dependencies = [
  "jensen-harness-core",
  "jensen-harness-protocol",
  "libc",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

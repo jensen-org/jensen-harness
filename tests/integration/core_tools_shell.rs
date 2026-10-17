@@ -66,3 +66,23 @@ async fn the_scratch_directory_exists_and_is_writable_for_the_command() {
     assert!(policy.scratch.join("probe").exists());
     std::fs::remove_dir_all(&policy.scratch).unwrap();
 }
+
+#[tokio::test]
+async fn a_command_that_outlives_its_timeout_is_killed_and_reported() {
+    let worktree = tempfile::tempdir().unwrap();
+    let policy = SandboxPolicy::confined_to(worktree.path());
+
+    let started = std::time::Instant::now();
+    let result = shell::run_with_timeout(
+        &NoopSandbox,
+        &policy,
+        "sleep 30",
+        std::time::Duration::from_millis(200),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.exit_code, 124);
+    assert!(result.stderr.contains("timed out"));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}

@@ -1,13 +1,21 @@
 //! Fakes shared across more than one test file. A fake lives here only once
 //! two or more files need it; a fake only one file needs stays local to it.
 
+use std::collections::VecDeque;
+use std::path::Path;
+use std::sync::Mutex;
+
 use async_trait::async_trait;
+use jensen_harness_core::compact::store::RawStore;
 use jensen_harness_core::providers::{
     CompletionRequest, CompletionResponse, ContentBlock, Provider, ProviderError, StopReason, Usage,
 };
 use jensen_harness_core::sandbox::{
     Confined, EnforcementReport, Sandbox, SandboxError, SandboxPolicy,
 };
+use jensen_harness_core::tools::Worktree;
+use jensen_harness_core::toolset::ToolSet;
+use serde_json::{Value, json};
 
 /// Echoes the last user turn back, prefixed, so a test can assert on
 /// exactly what reached the provider without a real model call.
@@ -62,4 +70,127 @@ impl Sandbox for NoopSandbox {
             },
         })
     }
+}
+
+/// Refuses every command, as a host with no sandbox backend would.
+pub struct UnavailableSandbox;
+
+impl Sandbox for UnavailableSandbox {
+    fn confine(
+        &self,
+        _policy: &SandboxPolicy,
+        _program: &str,
+        _args: &[String],
+    ) -> Result<Confined, SandboxError> {
+        Err(SandboxError::Unavailable(
+            "no backend in this test".to_string(),
+        ))
+    }
+}
+
+/// A tool set over `root` whose shell runs unconfined, for tests about the
+/// loop and the tools rather than about any one sandbox backend.
+pub fn tool_set(root: &Path) -> ToolSet {
+    tool_set_with(root, Box::new(NoopSandbox))
+}
+
+pub fn tool_set_with(root: &Path, sandbox: Box<dyn Sandbox>) -> ToolSet {
+    let worktree = Worktree::open(root).unwrap();
+    let policy = SandboxPolicy::confined_to(worktree.root());
+    let store = RawStore::new(policy.scratch.join("raw"));
+    ToolSet::new(worktree, sandbox, policy, store)
+}
+
+pub fn tool_use(id: &str, name: &str, input: Value) -> ContentBlock {
+    ContentBlock::ToolUse {
+        id: id.to_string(),
+        name: name.to_string(),
+        input,
+    }
+}
+
+pub fn reply(content: Vec<ContentBlock>, stop_reason: StopReason) -> CompletionResponse {
+    CompletionResponse {
+        content,
+        stop_reason,
+        usage: Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_tokens: 100,
+            cache_write_tokens: 1,
+        },
+    }
+}
+
+pub fn calls_tool(id: &str, name: &str, input: Value) -> CompletionResponse {
+    reply(vec![tool_use(id, name, input)], StopReason::ToolUse)
+}
+
+pub fn says(text: &str) -> CompletionResponse {
+    reply(
+        vec![ContentBlock::Text(text.to_string())],
+        StopReason::EndTurn,
+    )
+}
+
+/// Plays back a fixed list of replies, then repeats `fallback` if one was
+/// given and fails otherwise. Every request it received stays inspectable.
+#[derive(Debug)]
+pub struct Scripted {
+    script: Mutex<VecDeque<Result<CompletionResponse, ProviderError>>>,
+    fallback: Option<CompletionResponse>,
+    requests: Mutex<Vec<CompletionRequest>>,
+}
+
+impl Scripted {
+    pub fn new(script: Vec<Result<CompletionResponse, ProviderError>>) -> Self {
+        Self {
+            script: Mutex::new(script.into()),
+            fallback: None,
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn of(replies: Vec<CompletionResponse>) -> Self {
+        Self::new(replies.into_iter().map(Ok).collect())
+    }
+
+    pub fn repeating(reply: CompletionResponse) -> Self {
+        Self {
+            fallback: Some(reply),
+            ..Self::new(Vec::new())
+        }
+    }
+
+    pub fn calls(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
+
+    pub fn request(&self, index: usize) -> CompletionRequest {
+        self.requests.lock().unwrap().get(index).unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Provider for Scripted {
+    fn id(&self) -> &str {
+        "scripted"
+    }
+
+    async fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, ProviderError> {
+        self.requests.lock().unwrap().push(request);
+        let next = self.script.lock().unwrap().pop_front();
+        match (next, &self.fallback) {
+            (Some(result), _) => result,
+            (None, Some(fallback)) => Ok(fallback.clone()),
+            (None, None) => Err(ProviderError::Malformed("the script ran out".to_string())),
+        }
+    }
+}
+
+pub fn path_input(path: &str) -> Value {
+    json!({ "path": path })
 }
