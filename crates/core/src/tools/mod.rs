@@ -39,6 +39,16 @@ pub enum ToolError {
 /// fully resolved form is checked against the worktree's own resolved form,
 /// so a symlink escape is caught the same way the lexical escape is.
 ///
+/// Accepted limitation: there is a window between this check and the read
+/// or write a caller performs right after it, in which the path on disk
+/// could in principle be swapped for a symlink. This is accepted for now
+/// rather than closed (closing it properly needs directory-fd based,
+/// `openat(O_NOFOLLOW)` style resolution, so the check and the use are the
+/// same open file description, not two path lookups) because nothing in
+/// this phase or the next runs a second, concurrent writer against the
+/// same worktree while one tool call is in flight: that only starts once
+/// the DAG executor's fan-out ships. Revisit this before fan-out lands.
+///
 /// # Errors
 /// [`ToolError::OutsideWorktree`] if `relative` escapes the worktree
 /// lexically or, once resolved, by a symlink; [`ToolError::Io`] if the

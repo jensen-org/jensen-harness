@@ -66,12 +66,24 @@ impl Sandbox for Bubblewrap {
             "/dev".to_string(),
             "--proc".to_string(),
             "/proc".to_string(),
-            // A read-only bind of / still leaves every Unix domain socket
-            // under it connectable (read-only blocks writes to the inode,
-            // not AF_UNIX connect), so /run and /tmp, the usual home of a
-            // container runtime's or a display server's socket, are masked
-            // with a private tmpfs before anything more specific is bound
-            // back on top of them.
+            // A read-only bind of / still leaves every filesystem-path Unix
+            // domain socket under it connectable (read-only blocks writes
+            // to the inode, not AF_UNIX connect), so /run, /var/run and
+            // /tmp, the usual home of a container runtime's or a display
+            // server's socket, are masked with a private tmpfs before
+            // anything more specific is bound back on top of them. This
+            // only reaches filesystem-path sockets, and only takes effect
+            // at all under NetworkPolicy::None, which also passes
+            // --unshare-net below: a fresh network namespace is what
+            // isolates Linux's abstract-namespace AF_UNIX sockets (those
+            // have no filesystem path at all, so no amount of masking
+            // reaches them) and the host's other network-namespaced state.
+            // NetworkPolicy::Full deliberately keeps the host's network
+            // namespace, which is what "full" means, so under Full neither
+            // this masking nor the namespace isolation applies: abstract
+            // sockets and other host runtime sockets remain reachable
+            // there, and that is a property of asking for full network
+            // access, not a gap in this backend.
             "--tmpfs".to_string(),
             "/tmp".to_string(),
             "--tmpfs".to_string(),
@@ -123,6 +135,16 @@ impl Sandbox for Bubblewrap {
             }
             NetworkPolicy::Full => "full",
         };
+        let unsupported = if matches!(policy.network, NetworkPolicy::Full) {
+            vec![
+                "Full keeps the host's network namespace, so abstract-namespace AF_UNIX \
+                 sockets and other host runtime sockets stay reachable; this is what full \
+                 network access means, not a gap this backend tries to close"
+                    .to_string(),
+            ]
+        } else {
+            Vec::new()
+        };
         wrapped.push("--".to_string());
         wrapped.push(program.to_string());
         wrapped.extend(args.iter().cloned());
@@ -133,7 +155,7 @@ impl Sandbox for Bubblewrap {
                 backend: "bubblewrap",
                 filesystem_rules_applied: 3 + policy.extra_rules.len(),
                 network_tier,
-                unsupported: Vec::new(),
+                unsupported,
             },
         })
     }
@@ -207,5 +229,22 @@ mod tests {
         let error = Bubblewrap.confine(&policy, "/bin/true", &[]).unwrap_err();
 
         assert!(matches!(error, crate::sandbox::SandboxError::Policy(_)));
+    }
+
+    #[test]
+    fn confine_reports_that_full_network_does_not_isolate_abstract_sockets() {
+        use crate::sandbox::NetworkPolicy;
+
+        let mut policy = SandboxPolicy::confined_to("/repo/task");
+        policy.network = NetworkPolicy::Full;
+
+        let confined = Bubblewrap.confine(&policy, "/bin/true", &[]).unwrap();
+
+        assert_eq!(confined.report.network_tier, "full");
+        assert!(
+            !confined.report.unsupported.is_empty(),
+            "the Full tier must disclose that it does not isolate the network namespace"
+        );
+        assert!(!confined.args.iter().any(|arg| arg == "--unshare-net"));
     }
 }

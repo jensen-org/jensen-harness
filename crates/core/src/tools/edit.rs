@@ -11,17 +11,27 @@ use super::{ToolError, resolve_within};
 /// The check is on the resolved path, not the raw `relative` string: a
 /// string like `src/../.git/hooks/x` does not start with `.git` lexically,
 /// but still resolves there, so checking the input string alone would miss
-/// it.
+/// it. On unix, the same identity is also checked by device and inode, not
+/// just by path, because a hard link elsewhere in the worktree aliases the
+/// same file `.git` is without ever resolving through a path that starts
+/// with `.git` at all.
 ///
 /// # Errors
-/// [`ToolError::OutsideWorktree`] if `relative` escapes `worktree` or
-/// resolves under `.git`, [`ToolError::Io`] on a read or write failure, and
-/// [`ToolError::Io`] if `find` is not present in the file.
+/// [`ToolError::OutsideWorktree`] if `relative` escapes `worktree`,
+/// resolves under `.git`, or is a hard link to the same file as `.git`;
+/// [`ToolError::Io`] on a read or write failure, and [`ToolError::Io`] if
+/// `find` is not present in the file.
 pub fn run(worktree: &Path, relative: &str, find: &str, replace: &str) -> Result<(), ToolError> {
     let path = resolve_within(worktree, relative)?;
     let canonical_worktree =
         std::fs::canonicalize(worktree).map_err(|error| ToolError::Io(error.to_string()))?;
-    if path.starts_with(canonical_worktree.join(".git")) {
+    let git_pointer = canonical_worktree.join(".git");
+    if path.starts_with(&git_pointer) {
+        return Err(ToolError::OutsideWorktree {
+            path: relative.to_string(),
+        });
+    }
+    if is_same_file(&path, &git_pointer)? {
         return Err(ToolError::OutsideWorktree {
             path: relative.to_string(),
         });
@@ -38,6 +48,34 @@ pub fn run(worktree: &Path, relative: &str, find: &str, replace: &str) -> Result
     updated.push_str(replace);
     updated.push_str(&original[at + find.len()..]);
     std::fs::write(&path, updated).map_err(|error| ToolError::Io(error.to_string()))
+}
+
+/// Whether `path` and `other` are hard links to the same underlying file,
+/// which a path-prefix check alone cannot see: a hard link gives a second
+/// path to the identical inode, never nested under the first path at all.
+/// `other` not existing (the worktree may have no `.git` yet) is not an
+/// error here; it simply means nothing can alias it.
+///
+/// # Errors
+/// [`ToolError::Io`] if `path` itself cannot be inspected.
+#[cfg(unix)]
+fn is_same_file(path: &Path, other: &Path) -> Result<bool, ToolError> {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(other_metadata) = std::fs::metadata(other) else {
+        return Ok(false);
+    };
+    let path_metadata =
+        std::fs::metadata(path).map_err(|error| ToolError::Io(error.to_string()))?;
+    Ok(path_metadata.dev() == other_metadata.dev() && path_metadata.ino() == other_metadata.ino())
+}
+
+#[cfg(not(unix))]
+fn is_same_file(path: &Path, _other: &Path) -> Result<bool, ToolError> {
+    // No device/inode identity check on this platform yet; the path-prefix
+    // check above is what this phase ships here. Still a real read, so a
+    // target that cannot be inspected is still reported, not papered over.
+    std::fs::metadata(path).map_err(|error| ToolError::Io(error.to_string()))?;
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -78,5 +116,23 @@ mod tests {
     fn refuses_a_path_outside_the_worktree() {
         let worktree = tempdir().unwrap();
         assert!(run(worktree.path(), "../a.txt", "x", "y").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_hard_link_alias_of_the_worktrees_own_git_pointer() {
+        let worktree = tempdir().unwrap();
+        let git_pointer = worktree.path().join(".git");
+        fs::write(&git_pointer, "gitdir: /real").unwrap();
+        let alias = worktree.path().join("not-git-at-all.txt");
+        fs::hard_link(&git_pointer, &alias).unwrap();
+
+        let error = run(worktree.path(), "not-git-at-all.txt", "real", "fake").unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::tools::ToolError::OutsideWorktree { .. }
+        ));
+        assert_eq!(fs::read_to_string(&git_pointer).unwrap(), "gitdir: /real");
     }
 }
