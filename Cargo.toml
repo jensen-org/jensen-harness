@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/protocol", "crates/core", "crates/cli"]
+default-members = [".", "crates/protocol", "crates/core", "crates/cli"]
 
 # The workspace root is also an ordinary package, whose only purpose is to
 # hold the one tests/ directory every crate's tests live in: production

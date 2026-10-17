@@ -2,7 +2,7 @@
 //! two or more files need it; a fake only one file needs stays local to it.
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -193,4 +193,34 @@ impl Provider for Scripted {
 
 pub fn path_input(path: &str) -> Value {
     json!({ "path": path })
+}
+
+/// `cargo test` does not build the binary and `CARGO_BIN_EXE_jensen-harness`
+/// is only set inside the binary's own package, so it is built here, once
+/// per test run, then located under the workspace's target directory.
+pub fn binary_path() -> PathBuf {
+    static BUILT: std::sync::Once = std::sync::Once::new();
+    BUILT.call_once(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let status = std::process::Command::new(cargo)
+            .args(["build", "--quiet", "-p", "jensen-harness"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .expect("cargo can be run to build the binary");
+        assert!(
+            status.success(),
+            "building the jensen-harness binary failed"
+        );
+    });
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    for profile in ["debug", "release"] {
+        let candidate = target.join(profile).join("jensen-harness");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    panic!(
+        "the jensen-harness binary was not found under {}",
+        target.display()
+    );
 }

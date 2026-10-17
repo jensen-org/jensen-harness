@@ -27,6 +27,7 @@ mod core_tools_grep;
 mod core_tools_read;
 mod core_tools_shell;
 
+mod cli_binary_e2e;
 mod cli_daemon_round_trip;
 mod cli_rpc;
 mod cli_socket;
