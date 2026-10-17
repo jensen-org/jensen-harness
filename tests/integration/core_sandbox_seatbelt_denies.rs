@@ -6,7 +6,6 @@
 //! `writer_git.rs` do.
 
 #![cfg(target_os = "macos")]
-#![allow(clippy::unwrap_used)]
 
 use jensen_harness_core::sandbox::SandboxPolicy;
 use jensen_harness_core::sandbox::seatbelt::Seatbelt;

@@ -22,9 +22,5 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
-[dev-dependencies]
-tempfile = "3"
-wiremock = "0.6"
-
 [lints]
 workspace = true

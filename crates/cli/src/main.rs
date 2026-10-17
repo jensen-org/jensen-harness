@@ -1,20 +1,20 @@
 //! `jensen-harness`: a standalone agent harness. `serve` runs a long-lived
 //! daemon over a Unix socket; `run` speaks the same protocol headless over
 //! stdio. Both share one JSON-RPC handler, so a client sees identical
-//! behavior on either transport.
+//! behavior on either transport. The real logic lives in `lib.rs`; this is
+//! the thin process entry point.
 
-mod engine;
-mod rpc;
-
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use jensen_harness::engine::Engine;
+use jensen_harness::rpc;
+use jensen_harness::socket::{current_uid, remove_stale_socket};
 use jensen_harness_core::providers::anthropic::AnthropicProvider;
 use jensen_harness_core::providers::require_api_key;
 use tokio::io::{BufReader, stdin, stdout};
 use tokio::net::UnixListener;
-
-use engine::Engine;
 
 #[derive(Parser)]
 #[command(
@@ -61,13 +61,33 @@ async fn main() -> anyhow::Result<()> {
             rpc::serve_connection(reader, stdout(), engine).await?;
         }
         Command::Serve { socket } => {
-            if socket.exists() {
-                std::fs::remove_file(&socket)?;
-            }
+            remove_stale_socket(&socket).map_err(anyhow::Error::msg)?;
             let listener = UnixListener::bind(&socket)?;
+            // A fresh Unix socket is world-accessible by default on most
+            // systems, and this one carries live model credentials and
+            // runs the agent on whoever connects to it: restrict it to
+            // this user immediately, and verify every connecting peer's
+            // uid matches, rather than trusting filesystem permissions
+            // alone to still hold by the time a client connects.
+            std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+            let my_uid = current_uid();
             tracing::info!(socket = %socket.display(), "listening");
             loop {
                 let (stream, _addr) = listener.accept().await?;
+                match stream.peer_cred() {
+                    Ok(credentials) if credentials.uid() == my_uid => {}
+                    Ok(credentials) => {
+                        tracing::warn!(
+                            peer_uid = credentials.uid(),
+                            "rejected a connection from a different user"
+                        );
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "a connection's identity could not be verified; rejected");
+                        continue;
+                    }
+                }
                 let engine = std::sync::Arc::clone(&engine);
                 tokio::spawn(async move {
                     let (read_half, write_half) = stream.into_split();

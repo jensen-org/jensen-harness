@@ -4,15 +4,28 @@
 //! since there is no fake provider at this layer: the whole point is to
 //! prove a real response streams back on either transport.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
-
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// `CARGO_BIN_EXE_jensen-harness` is only set for a binary's own package;
+/// this test lives in the workspace's shared `jensen-harness-tests`
+/// package instead, so the binary is located relative to the workspace
+/// root (this package's manifest directory is the workspace root) under
+/// whichever profile directory `cargo test` actually built it into.
 fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_jensen-harness"))
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    for profile in ["debug", "release"] {
+        let candidate = target.join(profile).join("jensen-harness");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    panic!(
+        "the jensen-harness binary was not found under {}; run `cargo build` first",
+        target.display()
+    );
 }
 
 fn require_live_key() {
@@ -82,7 +95,7 @@ fn run_over_stdio_round_trips_a_real_prompt() {
     child.wait().expect("the process exits once stdin closes");
 }
 
-fn wait_for_socket(path: &std::path::Path, timeout: Duration) {
+fn wait_for_socket(path: &Path, timeout: Duration) {
     let started = Instant::now();
     while !path.exists() {
         assert!(

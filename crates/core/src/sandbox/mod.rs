@@ -11,11 +11,14 @@
 
 use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "macos")]
-pub mod seatbelt;
-
-#[cfg(target_os = "linux")]
+// Both modules compile on every platform: building the argument list a
+// backend would run is pure, portable code with no OS-specific syscall
+// beyond generic filesystem operations, so each backend's own tests can
+// run and be verified regardless of which OS is building. Only actually
+// running the resulting command (sandbox-exec, bwrap) needs the matching
+// OS, which is why those specific tests are separately platform-gated.
 pub mod bubblewrap;
+pub mod seatbelt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsMode {
@@ -109,6 +112,7 @@ pub enum SandboxError {
 /// A sandboxed, ready-to-run command: the program and its arguments after a
 /// backend has wrapped them, plus the report of what the wrapping actually
 /// enforces.
+#[derive(Debug)]
 pub struct Confined {
     pub program: String,
     pub args: Vec<String>,
@@ -196,43 +200,4 @@ fn normalize(path: &Path) -> Option<PathBuf> {
         }
     }
     Some(resolved)
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::{FsMode, SandboxPolicy, is_within};
-    use std::path::Path;
-
-    #[test]
-    fn confined_to_denies_the_worktrees_own_git_pointer() {
-        let policy = SandboxPolicy::confined_to("/repo/task");
-        let git_rule = policy.extra_rules.first().unwrap();
-        assert_eq!(git_rule.path, Path::new("/repo/task/.git"));
-        assert_eq!(git_rule.mode, FsMode::Deny);
-    }
-
-    #[test]
-    fn is_within_accepts_a_nested_path() {
-        assert!(is_within(
-            Path::new("/repo/task"),
-            Path::new("/repo/task/a.txt")
-        ));
-    }
-
-    #[test]
-    fn is_within_rejects_a_sibling_path() {
-        assert!(!is_within(
-            Path::new("/repo/task"),
-            Path::new("/repo/other/a.txt")
-        ));
-    }
-
-    #[test]
-    fn is_within_rejects_parent_traversal_back_out() {
-        assert!(!is_within(
-            Path::new("/repo/task"),
-            Path::new("/repo/task/../other")
-        ));
-    }
 }

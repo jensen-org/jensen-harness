@@ -27,20 +27,3 @@ pub fn run(worktree: &Path, pattern: &str) -> Result<Vec<String>, ToolError> {
     matches.sort();
     Ok(matches)
 }
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::run;
-    use std::fs;
-    use tempfile::tempdir;
-
-    #[test]
-    fn lists_matching_files_relative_to_the_worktree() {
-        let worktree = tempdir().unwrap();
-        fs::write(worktree.path().join("a.rs"), "").unwrap();
-        fs::write(worktree.path().join("b.txt"), "").unwrap();
-        let matches = run(worktree.path(), "*.rs").unwrap();
-        assert_eq!(matches, vec!["a.rs".to_string()]);
-    }
-}

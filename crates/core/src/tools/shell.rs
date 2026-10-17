@@ -24,9 +24,30 @@ pub async fn run(
     let confined = sandbox
         .confine(policy, "/bin/sh", &["-c".to_string(), command.to_string()])
         .map_err(|error| ToolError::Sandbox(error.to_string()))?;
+    // The sandbox confines the filesystem and the network, but a process's
+    // environment is inherited regardless, so without clearing it a shell
+    // command would otherwise see this daemon's own environment, including
+    // ANTHROPIC_API_KEY and any other secret a provider reads from it. Only
+    // a small, host-derived allowlist is passed back in; none of it is a
+    // secret, and a host that does not define one of these at all gets a
+    // reasonable, well known default rather than an empty value.
     let output = tokio::process::Command::new(&confined.program)
         .args(&confined.args)
         .current_dir(&policy.worktree)
+        .env_clear()
+        .env(
+            "PATH",
+            std::env::var("PATH").unwrap_or_else(|_unset| "/usr/bin:/bin".to_string()),
+        )
+        .env(
+            "HOME",
+            std::env::var("HOME").unwrap_or_else(|_unset| "/".to_string()),
+        )
+        .env(
+            "LANG",
+            std::env::var("LANG").unwrap_or_else(|_unset| "C".to_string()),
+        )
+        .env("TMPDIR", &policy.scratch)
         .output()
         .await
         .map_err(|error| ToolError::Io(error.to_string()))?;

@@ -692,12 +692,11 @@ name = "jensen-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "clap",
  "jensen-harness-core",
  "jensen-harness-protocol",
+ "libc",
  "serde_json",
- "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -715,12 +714,10 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror",
  "tokio",
  "tracing",
  "uuid",
- "wiremock",
 ]
 
 [[package]]
@@ -731,6 +728,21 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "jensen-harness-tests"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "jensen-harness",
+ "jensen-harness-core",
+ "jensen-harness-protocol",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]
