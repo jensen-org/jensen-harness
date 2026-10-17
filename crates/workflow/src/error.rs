@@ -5,6 +5,8 @@ use jensen_harness_core::store::StoreError;
 use jensen_harness_core::toolset::ToolSetError;
 use thiserror::Error;
 
+use jensen_harness_promote::PromoteError;
+
 use crate::state::StateError;
 use crate::validate::SpecError;
 
@@ -24,6 +26,10 @@ pub enum RunError {
     Budget(#[from] BudgetError),
     #[error(transparent)]
     Provider(#[from] ProviderError),
+    #[error(transparent)]
+    Promote(#[from] PromoteError),
+    #[error("this workflow has writer or promote nodes and needs a git repository to isolate them")]
+    NeedsRepository,
     #[error("no model is bound to role `{0}`")]
     UnknownRole(String),
     #[error("node `{node}` ran out of its token or cost budget")]

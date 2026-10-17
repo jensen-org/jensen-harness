@@ -16,6 +16,18 @@ pub enum PromoteError {
     EscapingSymlink { node: String, path: String },
     #[error("promoting `{node}` conflicts with the integration branch in: {files}")]
     PromotionConflict { node: String, files: String },
+    #[error(
+        "the review of `{node}` was made against {reviewed}, but the integration branch is now at {current}"
+    )]
+    StaleReview {
+        node: String,
+        reviewed: String,
+        current: String,
+    },
+    #[error("the review belongs to run {reviewed}, not run {run}")]
+    WrongRun { reviewed: String, run: String },
+    #[error("the merged result of `{node}` is blocked: {reasons}")]
+    MergedResultBlocked { node: String, reasons: String },
     #[error("path {0:?} in a worktree is not valid UTF-8")]
     NonUtf8Path(PathBuf),
     #[error("{0}")]

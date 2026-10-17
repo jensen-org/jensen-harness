@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -11,6 +12,8 @@ use jensen_harness_core::budget::Caps;
 use jensen_harness_core::store::{
     EventKind, LedgerError, NewScope, ScopeKind, Store, StoreError, workflow::WorkflowRun,
 };
+use jensen_harness_core::toolset::{Access, ToolSet};
+use jensen_harness_promote::Isolation;
 use jsonschema::Validator;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
@@ -72,6 +75,21 @@ impl Shared {
         })
     }
 
+    pub fn isolation(&self) -> Result<&Isolation, RunError> {
+        self.host.isolation().ok_or(RunError::NeedsRepository)
+    }
+
+    pub fn root_for(&self, id: &str) -> Result<PathBuf, RunError> {
+        match self.workflow.writer_scope(id) {
+            Some(writer) => Ok(self.isolation()?.prepare_node(&self.run_id, writer)?.path),
+            None => Ok(self.host.worktree().to_path_buf()),
+        }
+    }
+
+    pub fn tools_for(&self, id: &str, access: Access) -> Result<ToolSet, RunError> {
+        self.host.tools(access, &self.root_for(id)?)
+    }
+
     fn stash(&self, error: RunError) {
         if let Ok(mut slot) = self.failure.lock()
             && slot.is_none()
@@ -103,6 +121,8 @@ pub struct RunReport {
     pub outcomes: BTreeMap<String, String>,
     pub failure: Option<RunError>,
     pub super_steps: u64,
+    pub integration_branch: Option<String>,
+    pub head: Option<String>,
 }
 
 struct Ended {
@@ -583,6 +603,9 @@ impl Runner {
                 worktree: self.host.worktree().to_string_lossy().into_owned(),
             })
             .await?;
+        if shared.workflow.needs_repository() {
+            shared.isolation()?.begin_run(&shared.run_id)?;
+        }
         nodes::journal_event(
             &shared,
             EventKind::WorkflowStarted,
@@ -783,6 +806,12 @@ impl Runner {
             }),
         )
         .await?;
+        let (integration_branch, head) = if shared.workflow.needs_repository() {
+            let head = shared.isolation()?.integration_head(&shared.run_id)?;
+            (Some(Isolation::integration_ref(&shared.run_id)), Some(head))
+        } else {
+            (None, None)
+        };
         Ok(RunReport {
             run_id: shared.run_id.clone(),
             status,
@@ -790,6 +819,8 @@ impl Runner {
             outcomes,
             failure,
             super_steps: ended.super_steps,
+            integration_branch,
+            head,
         })
     }
 

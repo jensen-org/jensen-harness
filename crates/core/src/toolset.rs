@@ -107,6 +107,12 @@ struct ExpandInput {
 
 const EXPAND_DEFAULT_LIMIT: usize = 200;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    ReadOnly,
+    ReadWrite,
+}
+
 pub struct ToolSet {
     worktree: Worktree,
     sandbox: Box<dyn Sandbox>,
@@ -152,6 +158,24 @@ impl ToolSet {
             policy,
             store,
         ))
+    }
+
+    /// # Errors
+    /// [`ToolError::Io`] when `root` is missing or not a directory.
+    pub fn for_worktree_access(root: &Path, access: Access) -> Result<Self, ToolError> {
+        let worktree = Worktree::open(root)?;
+        let policy = match access {
+            Access::ReadOnly => SandboxPolicy::read_only(worktree.root()),
+            Access::ReadWrite => SandboxPolicy::confined_to(worktree.root()),
+        };
+        let store = RawStore::new(
+            std::env::temp_dir().join(format!("jensen-harness-raw-{}", uuid::Uuid::new_v4())),
+        );
+        let tools = Self::new(worktree, sandbox::platform_default(), policy, store);
+        Ok(match access {
+            Access::ReadOnly => tools.read_only(),
+            Access::ReadWrite => tools,
+        })
     }
 
     #[must_use]

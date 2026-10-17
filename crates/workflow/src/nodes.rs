@@ -11,6 +11,8 @@ use jensen_harness_core::providers::{Provider, Role};
 use jensen_harness_core::store::{
     EventKind, LedgerError, NewEvent, NewScope, ScopeKind, Store, StoreError,
 };
+use jensen_harness_core::toolset::Access;
+use jensen_harness_promote::{Finding, GateConfig, Gates, PromoteError, Provenance};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -19,7 +21,7 @@ use crate::expr;
 use crate::reducer;
 use crate::runtime::Shared;
 use crate::spec::{
-    AgentNode, CommandNode, LoopNode, NodeSpec, RouterNode, ToolAccess, VerifierNode,
+    AgentNode, CommandNode, LoopNode, NodeSpec, PromoteNode, RouterNode, ToolAccess, VerifierNode,
 };
 
 pub type Values = BTreeMap<String, Value>;
@@ -31,6 +33,8 @@ pub struct Finished {
     pub outputs: Values,
     pub label: Option<String>,
     pub outcome: String,
+    #[serde(default)]
+    pub detail: Option<Value>,
 }
 
 impl Finished {
@@ -39,6 +43,7 @@ impl Finished {
             outputs,
             label: None,
             outcome: "ok".to_owned(),
+            detail: None,
         }
     }
 }
@@ -142,6 +147,7 @@ fn interrupted(node: &NodeSpec) -> Finished {
         outputs,
         label: None,
         outcome: "interrupted".to_owned(),
+        detail: None,
     }
 }
 
@@ -172,7 +178,7 @@ pub async fn execute(
     journal_event(
         shared,
         EventKind::NodeFinished,
-        json!({"node": id, "ordinal": ordinal, "outcome": finished.outcome}),
+        json!({"node": id, "ordinal": ordinal, "outcome": finished.outcome, "detail": finished.detail}),
     )
     .await?;
     Ok(finished)
@@ -191,8 +197,9 @@ async fn run_kind(
         NodeSpec::Verifier(verifier) => run_verifier(shared, id, verifier, inputs).await,
         NodeSpec::Router(router) => run_router(id, router, inputs),
         NodeSpec::Loop(looped) => Box::pin(run_loop(shared, id, looped, inputs)).await,
-        NodeSpec::Promote(_) | NodeSpec::Publish(_) => Err(RunError::Engine(format!(
-            "node `{id}` needs an isolated repository, which this host does not provide"
+        NodeSpec::Promote(promote) => run_promote(shared, promote, inputs).await,
+        NodeSpec::Publish(_) => Err(RunError::Engine(format!(
+            "node `{id}` is a publish node and needs forge configuration"
         ))),
     }
 }
@@ -299,10 +306,11 @@ async fn run_agent(
         Err(error) => return Err(error.into()),
     }
     let session_id = format!("{}.{id}.{ordinal}", shared.run_id);
-    let mut tools = shared.host.tools()?;
-    if node.tools == ToolAccess::ReadOnly {
-        tools = tools.read_only();
-    }
+    let access = match node.tools {
+        ToolAccess::ReadOnly => Access::ReadOnly,
+        ToolAccess::Writer => Access::ReadWrite,
+    };
+    let tools = shared.tools_for(id, access)?;
     let provider: Arc<dyn Provider> = Arc::clone(&binding.provider);
     let stop = match Recovered::load(&shared.store, &session_id).await {
         Ok(recovered) => {
@@ -385,7 +393,7 @@ fn command_timeout(seconds: Option<u64>) -> Duration {
 }
 
 async fn run_command(shared: &Shared, id: &str, node: &CommandNode) -> Result<Finished, RunError> {
-    let tools = shared.host.tools()?;
+    let tools = shared.tools_for(id, Access::ReadWrite)?;
     let result = tools
         .run_command(&node.run, command_timeout(node.timeout_secs))
         .await?;
@@ -401,6 +409,7 @@ async fn run_command(shared: &Shared, id: &str, node: &CommandNode) -> Result<Fi
             outputs,
             label: None,
             outcome: "failed".to_owned(),
+            detail: None,
         });
     }
     if !node.writes.is_empty() {
@@ -416,7 +425,7 @@ async fn run_verifier(
     node: &VerifierNode,
     inputs: &Values,
 ) -> Result<Finished, RunError> {
-    let tools = shared.host.tools()?;
+    let tools = shared.tools_for(id, Access::ReadWrite)?;
     let result = tools
         .run_command(&node.run, command_timeout(node.timeout_secs))
         .await?;
@@ -447,6 +456,7 @@ fn run_router(id: &str, node: &RouterNode, inputs: &Values) -> Result<Finished, 
         outputs: Values::new(),
         label: Some(label),
         outcome: "ok".to_owned(),
+        detail: None,
     })
 }
 
@@ -523,5 +533,128 @@ async fn run_loop(
         outputs: emitted,
         label: None,
         outcome: outcome.to_owned(),
+        detail: None,
+    })
+}
+
+fn writer_model(shared: &Shared, writer: &str) -> Result<String, RunError> {
+    let spec = shared.workflow.spec();
+    let agent_role = |id: &str| match spec.nodes.get(id) {
+        Some(NodeSpec::Agent(agent)) => Some(agent.role.clone()),
+        _ => None,
+    };
+    let role = match spec.nodes.get(writer) {
+        Some(NodeSpec::Loop(body)) => body.body.iter().find_map(|member| agent_role(member)),
+        _ => agent_role(writer),
+    };
+    match role {
+        Some(role) => Ok(shared.host.bind(&role)?.model_address),
+        None => Ok("none".to_owned()),
+    }
+}
+
+fn blocked(output: Option<&String>, files: usize, findings: Vec<Value>, outcome: &str) -> Finished {
+    let value = json!({"commit": null, "files": files, "flags": [], "blocked": findings});
+    Finished {
+        outputs: output
+            .map(|channel| Values::from([(channel.clone(), value)]))
+            .unwrap_or_default(),
+        label: None,
+        outcome: outcome.to_owned(),
+        detail: Some(json!({"findings": findings})),
+    }
+}
+
+fn finding_json(finding: &Finding) -> Value {
+    json!({"gate": finding.gate, "path": finding.path, "reason": finding.reason})
+}
+
+async fn run_promote(
+    shared: &Shared,
+    node: &PromoteNode,
+    inputs: &Values,
+) -> Result<Finished, RunError> {
+    let isolation = shared.isolation()?;
+    let output = node.output.as_ref();
+    let tampered = |error: PromoteError| match error {
+        PromoteError::TamperedWorktree { reason, .. } => Ok(blocked(
+            output,
+            0,
+            vec![json!({"gate": "worktree", "path": "", "reason": reason})],
+            "blocked",
+        )),
+        other => Err(RunError::from(other)),
+    };
+    let handle = match isolation.prepare_node(&shared.run_id, &node.from) {
+        Ok(handle) => handle,
+        Err(error) => return tampered(error),
+    };
+    let provenance = Provenance {
+        run: shared.run_id.clone(),
+        node: node.from.clone(),
+        session: format!("{}.{}.0", shared.run_id, node.from),
+        model: writer_model(shared, &node.from)?,
+        spec: shared.workflow.hash().to_owned(),
+    };
+    let snapshot = match isolation.snapshot(&handle, &provenance) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return tampered(error),
+    };
+    let mut config = GateConfig {
+        protected: node.protected.clone(),
+        allow_binary: node.allow_binary,
+        ..GateConfig::default()
+    };
+    if let Some(limit) = node.max_changed_files {
+        config.max_changed_files = limit;
+    }
+    if let Some(limit) = node.max_added_bytes {
+        config.max_added_bytes = limit;
+    }
+    let unmet: Vec<String> = node
+        .requires
+        .iter()
+        .filter(|channel| inputs.get(*channel) != Some(&Value::Bool(true)))
+        .cloned()
+        .collect();
+    let gates = Gates::new(config)?;
+    let review = gates.review(isolation, &shared.run_id, &snapshot.commit, &unmet)?;
+    let flags: Vec<Value> = review.report.flags.iter().map(finding_json).collect();
+    let Some(cleared) = review.cleared else {
+        let findings = review.report.blocks.iter().map(finding_json).collect();
+        return Ok(blocked(output, review.report.files, findings, "blocked"));
+    };
+    let files = review.report.files;
+    let promoted = match isolation.merge_into_integration(
+        &shared.run_id,
+        &cleared,
+        &gates,
+        &provenance,
+    ) {
+        Ok(promoted) => promoted,
+        Err(PromoteError::PromotionConflict { files: names, .. }) => {
+            let finding = json!({"gate": "merge", "path": names, "reason": "the work conflicts with the integration branch"});
+            return Ok(blocked(output, files, vec![finding], "conflict"));
+        }
+        Err(PromoteError::MergedResultBlocked { reasons, .. }) => {
+            let finding = json!({"gate": "merged", "path": "", "reason": reasons});
+            return Ok(blocked(output, files, vec![finding], "blocked"));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    isolation.remove_node(&handle)?;
+    let value = json!({
+        "commit": promoted.head,
+        "node_commit": snapshot.commit,
+        "files": files,
+        "flags": flags,
+    });
+    Ok(Finished {
+        outputs: output
+            .map(|channel| Values::from([(channel.clone(), value)]))
+            .unwrap_or_default(),
+        label: None,
+        outcome: "ok".to_owned(),
+        detail: Some(json!({"flags": flags, "how": format!("{:?}", promoted.how)})),
     })
 }

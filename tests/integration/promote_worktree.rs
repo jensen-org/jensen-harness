@@ -319,28 +319,60 @@ fn node_with(fixture: &Fixture, run: &str, node: &str, file: &str, text: &str) -
         .commit
 }
 
+fn cleared(fixture: &Fixture, run: &str, commit: &str) -> jensen_harness_promote::Cleared {
+    let gates =
+        jensen_harness_promote::Gates::new(jensen_harness_promote::GateConfig::default()).unwrap();
+    let review = gates.review(&fixture.isolation, run, commit, &[]).unwrap();
+    review
+        .cleared
+        .unwrap_or_else(|| panic!("blocked: {:?}", review.report.blocks))
+}
+
+fn gates() -> jensen_harness_promote::Gates {
+    jensen_harness_promote::Gates::new(jensen_harness_promote::GateConfig::default()).unwrap()
+}
+
 #[test]
-fn promotion_fast_forwards_is_idempotent_and_merges_disjoint_work() {
+fn promotion_squashes_onto_the_tip_is_idempotent_and_merges_disjoint_work() {
     let fixture = fixture();
     let base = fixture.isolation.begin_run("m1").unwrap();
     let first = node_with(&fixture, "m1", "one", "one.txt", "1\n");
     let second = node_with(&fixture, "m1", "two", "two.txt", "2\n");
 
+    let ticket = cleared(&fixture, "m1", &first);
     let moved = fixture
         .isolation
-        .merge_into_integration("m1", &first, &provenance("m1", "one"))
+        .merge_into_integration("m1", &ticket, &gates(), &provenance("m1", "one"))
         .unwrap();
-    assert_eq!(moved.how, jensen_harness_promote::Promotion::FastForward);
-    assert_eq!(moved.head, first);
+    assert_eq!(moved.how, jensen_harness_promote::Promotion::Squashed);
+    assert_eq!(
+        git(
+            &fixture.repo,
+            &["rev-parse", &format!("{}^{{tree}}", moved.head)]
+        ),
+        git(&fixture.repo, &["rev-parse", &format!("{first}^{{tree}}")])
+    );
+    assert_eq!(
+        git(&fixture.repo, &["rev-parse", &format!("{}^", moved.head)]),
+        base
+    );
+    let message = git(&fixture.repo, &["log", "-1", "--format=%B", &moved.head]);
+    assert!(message.contains("Jensen-Node: one"), "{message}");
     let again = fixture
         .isolation
-        .merge_into_integration("m1", &first, &provenance("m1", "one"))
+        .merge_into_integration("m1", &ticket, &gates(), &provenance("m1", "one"))
         .unwrap();
     assert_eq!(again.how, jensen_harness_promote::Promotion::Already);
+    assert_eq!(again.head, moved.head);
 
     let merged = fixture
         .isolation
-        .merge_into_integration("m1", &second, &provenance("m1", "two"))
+        .merge_into_integration(
+            "m1",
+            &cleared(&fixture, "m1", &second),
+            &gates(),
+            &provenance("m1", "two"),
+        )
         .unwrap();
     assert_eq!(merged.how, jensen_harness_promote::Promotion::Merged);
     let listing = git(
@@ -363,19 +395,78 @@ fn promotion_that_conflicts_is_a_typed_error_and_moves_nothing() {
     fixture.isolation.begin_run("m2").unwrap();
     let first = node_with(&fixture, "m2", "one", "a.txt", "from one\n");
     let second = node_with(&fixture, "m2", "two", "a.txt", "from two\n");
-    fixture
+    let moved = fixture
         .isolation
-        .merge_into_integration("m2", &first, &provenance("m2", "one"))
+        .merge_into_integration(
+            "m2",
+            &cleared(&fixture, "m2", &first),
+            &gates(),
+            &provenance("m2", "one"),
+        )
         .unwrap();
 
     let refused = fixture
         .isolation
-        .merge_into_integration("m2", &second, &provenance("m2", "two"))
+        .merge_into_integration(
+            "m2",
+            &cleared(&fixture, "m2", &second),
+            &gates(),
+            &provenance("m2", "two"),
+        )
         .unwrap_err();
 
     assert!(
         matches!(&refused, PromoteError::PromotionConflict { files, .. } if files.contains("a.txt")),
         "{refused}"
     );
-    assert_eq!(fixture.isolation.integration_head("m2").unwrap(), first);
+    assert_eq!(
+        fixture.isolation.integration_head("m2").unwrap(),
+        moved.head
+    );
+}
+
+#[test]
+fn a_review_cannot_be_used_for_another_run_or_after_the_branch_moved() {
+    let fixture = fixture();
+    fixture.isolation.begin_run("m3").unwrap();
+    fixture.isolation.begin_run("m4").unwrap();
+    let first = node_with(&fixture, "m3", "one", "one.txt", "1\n");
+    let second = node_with(&fixture, "m3", "two", "two.txt", "2\n");
+    let ticket = cleared(&fixture, "m3", &first);
+    let stale = cleared(&fixture, "m3", &second);
+
+    let wrong = fixture
+        .isolation
+        .merge_into_integration("m4", &ticket, &gates(), &provenance("m4", "one"))
+        .unwrap_err();
+    assert!(matches!(wrong, PromoteError::WrongRun { .. }));
+
+    fixture
+        .isolation
+        .merge_into_integration("m3", &ticket, &gates(), &provenance("m3", "one"))
+        .unwrap();
+    let late = fixture
+        .isolation
+        .merge_into_integration("m3", &stale, &gates(), &provenance("m3", "two"))
+        .unwrap_err();
+    assert!(matches!(late, PromoteError::StaleReview { .. }), "{late}");
+}
+
+#[test]
+fn work_that_fails_a_gate_is_never_cleared() {
+    let fixture = fixture();
+    fixture.isolation.begin_run("m5").unwrap();
+    let bad = node_with(&fixture, "m5", "one", ".gitlab-ci.yml", "stages: []\n");
+    let review = gates().review(&fixture.isolation, "m5", &bad, &[]).unwrap();
+    assert!(review.cleared.is_none());
+    let unmet = gates()
+        .review(
+            &fixture.isolation,
+            "m5",
+            &fixture.isolation.integration_head("m5").unwrap(),
+            &["checked".to_owned()],
+        )
+        .unwrap();
+    assert!(unmet.cleared.is_none());
+    assert!(unmet.report.blocks.iter().any(|f| f.gate == "verify"));
 }

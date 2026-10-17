@@ -10,7 +10,8 @@ use jensen_harness_core::providers::{
     CompletionRequest, CompletionResponse, Provider, ProviderError,
 };
 use jensen_harness_core::store::{EventKind, NewEvent, Store};
-use jensen_harness_core::toolset::ToolSet;
+use jensen_harness_core::toolset::{Access, ToolSet};
+use jensen_harness_promote::Isolation;
 use jensen_harness_workflow::nodes::{self, Values};
 use jensen_harness_workflow::runtime::Shared;
 use jensen_harness_workflow::{
@@ -25,6 +26,7 @@ struct TestHost {
     provider: Arc<dyn Provider>,
     dir: PathBuf,
     budget: BudgetSettings,
+    isolation: Option<Isolation>,
 }
 
 impl Host for TestHost {
@@ -35,8 +37,12 @@ impl Host for TestHost {
         })
     }
 
-    fn tools(&self) -> Result<ToolSet, RunError> {
-        Ok(tool_set(&self.dir))
+    fn tools(&self, _access: Access, root: &std::path::Path) -> Result<ToolSet, RunError> {
+        Ok(tool_set(root))
+    }
+
+    fn isolation(&self) -> Option<&Isolation> {
+        self.isolation.as_ref()
     }
 
     fn worktree(&self) -> &std::path::Path {
@@ -63,6 +69,7 @@ fn fixture(provider: Arc<dyn Provider>) -> Fixture {
         provider,
         dir: root.clone(),
         budget: BudgetSettings::default(),
+        isolation: None,
     });
     Fixture {
         _dir: dir,
@@ -453,6 +460,7 @@ async fn an_agent_killed_mid_call_resumes_its_own_journal_without_repeating_a_co
             provider: resumed_provider.clone(),
             dir: first.root.clone(),
             budget: BudgetSettings::default(),
+            isolation: None,
         }),
     };
     let report = file_runner(&second, checkpoints.path())

@@ -92,6 +92,7 @@ pub struct Workflow {
     hash: String,
     graph: DiGraph<String, ()>,
     waves: Vec<Vec<String>>,
+    scopes: BTreeMap<String, String>,
 }
 
 pub fn load(yaml: &str) -> Result<Workflow, SpecError> {
@@ -129,14 +130,16 @@ impl Workflow {
         })?;
         check_state_flow(&spec, &owners, &graph, &index)?;
         check_parallelism(&spec, &owners, &graph, &index)?;
-        check_promotion(&spec, &graph, &index)?;
+        let promoted = check_promotion(&spec, &graph, &index)?;
         let waves = waves(&graph, &order);
+        let scopes = writer_scopes(&spec, &owners, &graph, &index, &waves, &promoted);
         let hash = hash(&spec)?;
         Ok(Self {
             spec,
             hash,
             graph,
             waves,
+            scopes,
         })
     }
 
@@ -148,6 +151,20 @@ impl Workflow {
     #[must_use]
     pub fn hash(&self) -> &str {
         &self.hash
+    }
+
+    #[must_use]
+    pub fn writer_scope(&self, node: &str) -> Option<&str> {
+        self.scopes.get(node).map(String::as_str)
+    }
+
+    #[must_use]
+    pub fn needs_repository(&self) -> bool {
+        self.spec
+            .nodes
+            .values()
+            .any(|node| matches!(node, NodeSpec::Promote(_) | NodeSpec::Publish(_)))
+            || !self.scopes.is_empty()
     }
 
     #[must_use]
@@ -537,7 +554,7 @@ fn check_promotion(
     spec: &WorkflowSpec,
     graph: &DiGraph<String, ()>,
     index: &Index,
-) -> Result<(), SpecError> {
+) -> Result<BTreeMap<String, String>, SpecError> {
     let mut promoted: BTreeMap<&str, &str> = BTreeMap::new();
     for (id, node) in &spec.nodes {
         let NodeSpec::Promote(promote) = node else {
@@ -599,7 +616,43 @@ fn check_promotion(
             ));
         }
     }
-    Ok(())
+    Ok(promoted
+        .into_iter()
+        .map(|(writer, promote)| (writer.to_owned(), promote.to_owned()))
+        .collect())
+}
+
+fn writer_scopes(
+    spec: &WorkflowSpec,
+    owners: &BTreeMap<String, String>,
+    graph: &DiGraph<String, ()>,
+    index: &Index,
+    waves: &[Vec<String>],
+    promoted: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let depth: BTreeMap<&str, usize> = waves
+        .iter()
+        .enumerate()
+        .flat_map(|(level, wave)| wave.iter().map(move |node| (node.as_str(), level)))
+        .collect();
+    let mut scopes = BTreeMap::new();
+    for id in spec.nodes.keys() {
+        let unit = unit_of(id, owners);
+        let chosen = index
+            .keys()
+            .filter(|writer| holds_writer_agent(spec, writer))
+            .filter(|writer| writer.as_str() == unit || is_ancestor(graph, index, writer, unit))
+            .filter(|writer| {
+                promoted
+                    .get(writer.as_str())
+                    .is_none_or(|promote| !is_ancestor(graph, index, promote, unit))
+            })
+            .max_by_key(|writer| depth.get(writer.as_str()).copied().unwrap_or_default());
+        if let Some(writer) = chosen {
+            scopes.insert(id.clone(), writer.clone());
+        }
+    }
+    scopes
 }
 
 fn reachable_without(

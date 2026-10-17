@@ -86,6 +86,7 @@ pub struct Engine {
     pub budget: BudgetSettings,
     pub sessions: Mutex<HashMap<String, Arc<Mutex<LiveSession>>>>,
     pub checkpoints: Arc<dyn RunStore>,
+    pub workspaces: std::path::PathBuf,
     pub active_workflows: Mutex<HashMap<String, CancellationToken>>,
 }
 
@@ -98,8 +99,18 @@ impl Engine {
             budget,
             sessions: Mutex::new(HashMap::new()),
             checkpoints: Arc::new(MemoryRunStore::new()),
+            workspaces: std::env::temp_dir().join(format!(
+                "jensen-harness-workspaces-{}",
+                uuid::Uuid::new_v4()
+            )),
             active_workflows: Mutex::new(HashMap::new()),
         }
+    }
+
+    #[must_use]
+    pub fn with_workspaces(mut self, workspaces: std::path::PathBuf) -> Self {
+        self.workspaces = workspaces;
+        self
     }
 
     /// Keeps workflow checkpoints in `checkpoints`, so a run survives a

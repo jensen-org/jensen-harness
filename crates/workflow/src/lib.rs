@@ -10,6 +10,7 @@ pub mod validate;
 
 pub use error::RunError;
 pub use host::{Host, RoleBinding};
+pub use jensen_harness_core::toolset::Access;
 pub use runtime::{RunReport, RunStatus, Runner, StartRequest};
 pub use spec::{NodeSpec, WorkflowSpec};
 pub use validate::{SpecError, Workflow, json_schema, load};

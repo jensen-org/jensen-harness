@@ -103,6 +103,26 @@ impl Report {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Cleared {
+    pub(crate) run: String,
+    pub(crate) commit: String,
+    pub(crate) base: String,
+}
+
+impl Cleared {
+    #[must_use]
+    pub fn commit(&self) -> &str {
+        &self.commit
+    }
+}
+
+#[derive(Debug)]
+pub struct Review {
+    pub report: Report,
+    pub cleared: Option<Cleared>,
+}
+
 pub struct Gates {
     config: GateConfig,
     protected: GlobSet,
@@ -181,6 +201,30 @@ impl Gates {
             ));
         }
         Ok(report)
+    }
+
+    pub fn review(
+        &self,
+        isolation: &Isolation,
+        run: &str,
+        commit: &str,
+        unmet: &[String],
+    ) -> Result<Review, PromoteError> {
+        let base = isolation.integration_head(run)?;
+        let mut report = self.evaluate(isolation, &base, commit)?;
+        for requirement in unmet {
+            report.blocks.push(finding(
+                "verify",
+                "",
+                format!("verified channel `{requirement}` is not true"),
+            ));
+        }
+        let cleared = report.passed().then(|| Cleared {
+            run: run.to_owned(),
+            commit: commit.to_owned(),
+            base,
+        });
+        Ok(Review { report, cleared })
     }
 
     fn check_change(

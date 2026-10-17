@@ -2,12 +2,13 @@ use gix::bstr::BStr;
 use gix::refs::transaction::PreviousValue;
 
 use crate::error::{PromoteError, git};
+use crate::gates::{Cleared, Gates};
 use crate::isolation::{Isolation, Provenance};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Promotion {
     Already,
-    FastForward,
+    Squashed,
     Merged,
 }
 
@@ -19,6 +20,17 @@ pub struct Promoted {
 
 fn parse(id: &str) -> Result<gix::ObjectId, PromoteError> {
     gix::ObjectId::from_hex(id.as_bytes()).map_err(git)
+}
+
+fn message(provenance: &Provenance, verb: &str) -> String {
+    format!(
+        "jensen: {verb} {node} in run {run}\n\nJensen-Run: {run}\nJensen-Node: {node}\nJensen-Session: {session}\nJensen-Model: {model}\nJensen-Spec: {spec}\n",
+        node = provenance.node,
+        run = provenance.run,
+        session = provenance.session,
+        model = provenance.model,
+        spec = provenance.spec,
+    )
 }
 
 impl Isolation {
@@ -33,90 +45,133 @@ impl Isolation {
             .is_ok_and(|base| base.is_some_and(|base| base.detach() == ancestor))
     }
 
+    fn tree_of(
+        repo: &gix::Repository,
+        commit: gix::ObjectId,
+    ) -> Result<gix::ObjectId, PromoteError> {
+        Ok(repo
+            .find_commit(commit)
+            .map_err(git)?
+            .tree_id()
+            .map_err(git)?
+            .detach())
+    }
+
     pub fn merge_into_integration(
         &self,
         run: &str,
-        node_commit: &str,
+        cleared: &Cleared,
+        gates: &Gates,
         provenance: &Provenance,
     ) -> Result<Promoted, PromoteError> {
+        if cleared.run != run {
+            return Err(PromoteError::WrongRun {
+                reviewed: cleared.run.clone(),
+                run: run.to_owned(),
+            });
+        }
         let repo = self.open_repo()?;
         let name = Self::integration_ref(run);
         let head = self.integration_head(run)?;
-        let (head_id, node_id) = (parse(&head)?, parse(node_commit)?);
-        if head_id == node_id || self.is_ancestor(node_commit, &head) {
+        let (head_id, node_id) = (parse(&head)?, parse(&cleared.commit)?);
+        let (head_tree, node_tree) = (
+            Self::tree_of(&repo, head_id)?,
+            Self::tree_of(&repo, node_id)?,
+        );
+        if head_id == node_id
+            || self.is_ancestor(&cleared.commit, &head)
+            || (head_tree == node_tree && self.is_ancestor(&cleared.base, &head))
+        {
             return Ok(Promoted {
                 head,
                 how: Promotion::Already,
             });
         }
-        if self.is_ancestor(&head, node_commit) {
-            repo.reference(
-                name.as_str(),
-                node_id,
-                PreviousValue::MustExistAndMatch(gix::refs::Target::Object(head_id)),
-                "jensen: fast forward promotion",
-            )
-            .map_err(git)?;
-            return Ok(Promoted {
-                head: node_commit.to_owned(),
-                how: Promotion::FastForward,
-            });
-        }
-        let options = gix::merge::commit::Options::from(repo.tree_merge_options().map_err(git)?);
-        let labels = gix::merge::blob::builtin_driver::text::Labels {
-            ancestor: None,
-            current: Some(BStr::new("integration")),
-            other: Some(BStr::new(provenance.node.as_str())),
-        };
-        let mut outcome = repo
-            .merge_commits(head_id, node_id, labels, options)
-            .map_err(git)?;
-        let how = gix::merge::tree::TreatAsUnresolved::default();
-        if outcome.tree_merge.has_unresolved_conflicts(how) {
-            let files = outcome
-                .tree_merge
-                .conflicts
-                .iter()
-                .filter(|conflict| conflict.is_unresolved(how))
-                .map(|conflict| conflict.ours.location().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(PromoteError::PromotionConflict {
+        if head != cleared.base {
+            return Err(PromoteError::StaleReview {
                 node: provenance.node.clone(),
-                files,
+                reviewed: cleared.base.clone(),
+                current: head,
             });
         }
-        let tree = outcome.tree_merge.tree.write().map_err(git)?.detach();
-        let seconds = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| PromoteError::Io(error.to_string()))?
-            .as_secs();
-        let time = format!("{seconds} +0000");
+        let time = format!(
+            "{} +0000",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| PromoteError::Io(error.to_string()))?
+                .as_secs()
+        );
         let signature = gix::actor::SignatureRef {
             name: BStr::new("Jensen Harness"),
             email: BStr::new("harness@jensen.invalid"),
             time: &time,
         };
-        let message = format!(
-            "jensen: promote {node} into run {run}\n\nJensen-Run: {run}\nJensen-Node: {node}\nJensen-Spec: {spec}\n",
-            node = provenance.node,
-            run = provenance.run,
-            spec = provenance.spec,
-        );
-        let merged = repo
-            .commit_as(
+        let squashable = self.is_ancestor(&head, &cleared.commit);
+        let (tree, parents, how, verb) = if squashable {
+            (node_tree, vec![head_id], Promotion::Squashed, "work of")
+        } else {
+            let options =
+                gix::merge::commit::Options::from(repo.tree_merge_options().map_err(git)?);
+            let labels = gix::merge::blob::builtin_driver::text::Labels {
+                ancestor: None,
+                current: Some(BStr::new("integration")),
+                other: Some(BStr::new(provenance.node.as_str())),
+            };
+            let mut outcome = repo
+                .merge_commits(head_id, node_id, labels, options)
+                .map_err(git)?;
+            let unresolved = gix::merge::tree::TreatAsUnresolved::default();
+            if outcome.tree_merge.has_unresolved_conflicts(unresolved) {
+                let files = outcome
+                    .tree_merge
+                    .conflicts
+                    .iter()
+                    .filter(|conflict| conflict.is_unresolved(unresolved))
+                    .map(|conflict| conflict.ours.location().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(PromoteError::PromotionConflict {
+                    node: provenance.node.clone(),
+                    files,
+                });
+            }
+            let tree = outcome.tree_merge.tree.write().map_err(git)?.detach();
+            (tree, vec![head_id, node_id], Promotion::Merged, "promote")
+        };
+        let commit = repo
+            .new_commit_as(
                 signature,
                 signature,
-                name.as_str(),
-                message,
+                message(provenance, verb),
                 tree,
-                [head_id, node_id],
+                parents,
             )
             .map_err(git)?
-            .detach();
+            .id;
+        let commit_hex = commit.to_string();
+        let review = gates.evaluate(self, &head, &commit_hex)?;
+        if !review.passed() {
+            let reasons = review
+                .blocks
+                .iter()
+                .map(|finding| format!("{}: {} {}", finding.gate, finding.path, finding.reason))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(PromoteError::MergedResultBlocked {
+                node: provenance.node.clone(),
+                reasons,
+            });
+        }
+        repo.reference(
+            name.as_str(),
+            commit,
+            PreviousValue::MustExistAndMatch(gix::refs::Target::Object(head_id)),
+            "jensen: promotion",
+        )
+        .map_err(git)?;
         Ok(Promoted {
-            head: merged.to_string(),
-            how: Promotion::Merged,
+            head: commit_hex,
+            how,
         })
     }
 }

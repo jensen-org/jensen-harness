@@ -15,6 +15,7 @@ blake3 = "1"
 cel = "0.15"
 dagrs = "0.9"
 jensen-harness-core = { version = "0.1.0", path = "../core" }
+jensen-harness-promote = { path = "../promote" }
 jsonschema = "0.59"
 petgraph = { version = "0.8", features = ["serde-1"] }
 schemars = "1"

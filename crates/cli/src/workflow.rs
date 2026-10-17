@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use jensen_harness_core::budget::BudgetSettings;
 use jensen_harness_core::budget::Caps;
-use jensen_harness_core::toolset::ToolSet;
+use jensen_harness_core::toolset::{Access, ToolSet};
+use jensen_harness_promote::Isolation;
 use jensen_harness_protocol::{
     RequestId, Response, WorkflowCancelParams, WorkflowCancelResult, WorkflowResumeParams,
     WorkflowRunResult, WorkflowStartParams, WorkflowStatus, WorkflowStatusParams,
@@ -20,6 +21,7 @@ use crate::rpc::{internal, invalid_params, parse_params};
 struct EngineHost {
     engine: Arc<Engine>,
     worktree: PathBuf,
+    isolation: Option<Isolation>,
 }
 
 impl Host for EngineHost {
@@ -36,10 +38,13 @@ impl Host for EngineHost {
         })
     }
 
-    fn tools(&self) -> Result<ToolSet, RunError> {
-        ToolSet::for_worktree(&self.worktree).map_err(|error| {
-            RunError::Engine(format!("worktree {}: {error}", self.worktree.display()))
-        })
+    fn tools(&self, access: Access, root: &Path) -> Result<ToolSet, RunError> {
+        ToolSet::for_worktree_access(root, access)
+            .map_err(|error| RunError::Engine(format!("worktree {}: {error}", root.display())))
+    }
+
+    fn isolation(&self) -> Option<&Isolation> {
+        self.isolation.as_ref()
     }
 
     fn worktree(&self) -> &Path {
@@ -56,6 +61,7 @@ fn runner(engine: &Arc<Engine>, worktree: PathBuf) -> Runner {
         store: engine.store.clone(),
         host: Arc::new(EngineHost {
             engine: Arc::clone(engine),
+            isolation: Isolation::open(&worktree, &engine.workspaces).ok(),
             worktree,
         }),
         checkpoints: Arc::clone(&engine.checkpoints),

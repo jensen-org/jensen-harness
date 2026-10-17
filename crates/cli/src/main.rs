@@ -181,7 +181,11 @@ fn build_engine(
                 directory.display()
             )
         })?;
-    Ok(Engine::new(Box::new(models), store, budget).with_checkpoints(Arc::new(checkpoints)))
+    let mut workspaces = path.clone().into_os_string();
+    workspaces.push(".workspaces");
+    Ok(Engine::new(Box::new(models), store, budget)
+        .with_checkpoints(Arc::new(checkpoints))
+        .with_workspaces(PathBuf::from(workspaces)))
 }
 
 #[tokio::main]
