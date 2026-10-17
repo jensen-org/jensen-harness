@@ -1,76 +1,93 @@
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Component;
 
-use super::{ToolError, resolve_within};
+use cap_std::fs::{MetadataExt, OpenOptions};
 
-/// Replaces the first occurrence of `find` with `replace` in `relative` and
-/// writes the result back. Also refuses an edit whose target, after fully
-/// resolving (symlinks included), is under the worktree's own `.git`, so
-/// this tool never becomes a second way around the sandbox's own denial of
-/// that path.
-///
-/// The check is on the resolved path, not the raw `relative` string: a
-/// string like `src/../.git/hooks/x` does not start with `.git` lexically,
-/// but still resolves there, so checking the input string alone would miss
-/// it. On unix, any file with more than one hard link is refused outright,
-/// not only one specifically aliasing `.git`: a legitimate file inside a
-/// git worktree is essentially never hard linked, so a link count above
-/// one is itself the signal, regardless of what the other path happens to
-/// be.
+use super::{ToolError, Worktree, io_error};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditOutcome {
+    pub replacements: usize,
+    pub first_line: usize,
+}
+
+/// Replaces `find` with `replace` in `relative`. Refuses a `find` that
+/// matches more than once unless `replace_all` is set, since nobody checks
+/// which match was meant. Also refuses a target that resolves under the
+/// worktree's own `.git`, and any file with more than one hard link: a
+/// hard link is a second path to the same inode that no path check can see,
+/// and a legitimate file in a git worktree is essentially never linked.
 ///
 /// # Errors
-/// [`ToolError::OutsideWorktree`] if `relative` escapes `worktree`,
-/// resolves under `.git`, or is hard linked from elsewhere; [`ToolError::Io`]
-/// on a read or write failure, and [`ToolError::Io`] if `find` is not
-/// present in the file.
-pub fn run(worktree: &Path, relative: &str, find: &str, replace: &str) -> Result<(), ToolError> {
-    let path = resolve_within(worktree, relative)?;
-    let canonical_worktree =
-        std::fs::canonicalize(worktree).map_err(|error| ToolError::Io(error.to_string()))?;
-    let git_pointer = canonical_worktree.join(".git");
-    if path.starts_with(&git_pointer) {
+/// [`ToolError::OutsideWorktree`] if `relative` escapes the worktree,
+/// resolves under `.git`, or is hard linked; [`ToolError::Ambiguous`] for a
+/// repeated match without `replace_all`; [`ToolError::Io`] on a read or
+/// write failure, an empty `find`, or a `find` that is not in the file.
+pub fn run(
+    worktree: &Worktree,
+    relative: &str,
+    find: &str,
+    replace: &str,
+    replace_all: bool,
+) -> Result<EditOutcome, ToolError> {
+    if find.is_empty() {
+        return Err(ToolError::Io("find must not be empty".to_string()));
+    }
+    let resolved = worktree.canonical(relative)?;
+    if resolved.components().next() == Some(Component::Normal(".git".as_ref())) {
         return Err(ToolError::OutsideWorktree {
             path: relative.to_string(),
         });
     }
-    if is_hard_linked(&path)? {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    let mut file = worktree
+        .dir
+        .open_with(&resolved, &options)
+        .map_err(|error| io_error(&error, relative))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| io_error(&error, relative))?;
+    if metadata.nlink() > 1 {
         return Err(ToolError::OutsideWorktree {
             path: relative.to_string(),
         });
     }
-    let original =
-        std::fs::read_to_string(&path).map_err(|error| ToolError::Io(error.to_string()))?;
-    let Some(at) = original.find(find) else {
+    let mut original = String::new();
+    file.read_to_string(&mut original)
+        .map_err(|error| io_error(&error, relative))?;
+    let count = original.matches(find).count();
+    if count == 0 {
         return Err(ToolError::Io(format!(
             "{find:?} was not found in {relative}"
         )));
+    }
+    if count > 1 && !replace_all {
+        return Err(ToolError::Ambiguous {
+            path: relative.to_string(),
+            find: find.to_string(),
+            count,
+        });
+    }
+    let first_line = original.find(find).map_or(1, |at| {
+        original
+            .get(..at)
+            .map_or(0, |head| head.matches('\n').count())
+            + 1
+    });
+    let updated = if replace_all {
+        original.replace(find, replace)
+    } else {
+        original.replacen(find, replace, 1)
     };
-    let mut updated = String::with_capacity(original.len());
-    updated.push_str(&original[..at]);
-    updated.push_str(replace);
-    updated.push_str(&original[at + find.len()..]);
-    std::fs::write(&path, updated).map_err(|error| ToolError::Io(error.to_string()))
-}
-
-/// Whether `path` has more than one hard link, which a path-prefix check
-/// alone cannot see: a hard link gives a second path to the identical
-/// inode, never nested under the first path at all, so it could alias
-/// `.git` or anything else outside the worktree without the resolved path
-/// ever showing it.
-///
-/// # Errors
-/// [`ToolError::Io`] if `path` cannot be inspected.
-#[cfg(unix)]
-fn is_hard_linked(path: &Path) -> Result<bool, ToolError> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = std::fs::metadata(path).map_err(|error| ToolError::Io(error.to_string()))?;
-    Ok(metadata.nlink() > 1)
-}
-
-#[cfg(not(unix))]
-fn is_hard_linked(path: &Path) -> Result<bool, ToolError> {
-    // No link-count check on this platform yet; the path-prefix check
-    // above is what this phase ships here. Still a real read, so a target
-    // that cannot be inspected is still reported, not papered over.
-    std::fs::metadata(path).map_err(|error| ToolError::Io(error.to_string()))?;
-    Ok(false)
+    file.set_len(0)
+        .map_err(|error| io_error(&error, relative))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| io_error(&error, relative))?;
+    file.write_all(updated.as_bytes())
+        .map_err(|error| io_error(&error, relative))?;
+    Ok(EditOutcome {
+        replacements: if replace_all { count } else { 1 },
+        first_line,
+    })
 }

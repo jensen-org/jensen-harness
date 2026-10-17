@@ -2,5 +2,9 @@
 **/*.sqlite
 **/*.sqlite-*
 .DS_Store
-.claude/settings.local.json
+.claude/
+.codex/
+.jensen/
+architecture/
+.agents/
 docs/plan.md

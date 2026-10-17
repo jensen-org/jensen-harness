@@ -48,3 +48,102 @@ async fn the_cleared_environment_still_has_a_usable_path() {
         "a trivial command must still run with the allowlisted env"
     );
 }
+
+#[tokio::test]
+async fn the_scratch_directory_exists_and_is_writable_for_the_command() {
+    let worktree = tempfile::tempdir().unwrap();
+    let policy = SandboxPolicy::confined_to(worktree.path());
+
+    let result = shell::run(
+        &NoopSandbox,
+        &policy,
+        "echo ok > \"$TMPDIR/probe\" && cat \"$TMPDIR/probe\"",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.stdout.trim(), "ok");
+    assert!(policy.scratch.join("probe").exists());
+    std::fs::remove_dir_all(&policy.scratch).unwrap();
+}
+
+#[tokio::test]
+async fn a_command_that_outlives_its_timeout_is_killed_and_reported() {
+    let worktree = tempfile::tempdir().unwrap();
+    let policy = SandboxPolicy::confined_to(worktree.path());
+
+    let started = std::time::Instant::now();
+    let result = shell::run_with_timeout(
+        &NoopSandbox,
+        &policy,
+        "sleep 30",
+        std::time::Duration::from_millis(200),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.exit_code, 124);
+    assert!(result.stderr.contains("timed out"));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}
+
+#[cfg(unix)]
+fn process_is_gone(pid: &str) -> bool {
+    for _ in 0..50 {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        if !alive {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    false
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_background_process_does_not_outlive_the_call() {
+    let worktree = tempfile::tempdir().unwrap();
+    let policy = SandboxPolicy::confined_to(worktree.path());
+
+    let result = shell::run(
+        &NoopSandbox,
+        &policy,
+        "(sleep 300 >/dev/null 2>&1 & echo $! > \"$TMPDIR/pid\")",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.exit_code, 0);
+    let pid = std::fs::read_to_string(policy.scratch.join("pid")).unwrap();
+    assert!(process_is_gone(pid.trim()), "pid {pid} survived the call");
+    std::fs::remove_dir_all(&policy.scratch).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_timeout_kills_the_whole_group_not_just_the_shell() {
+    let worktree = tempfile::tempdir().unwrap();
+    let policy = SandboxPolicy::confined_to(worktree.path());
+
+    let result = shell::run_with_timeout(
+        &NoopSandbox,
+        &policy,
+        "sleep 300 & echo $! > \"$TMPDIR/pid\"; wait",
+        std::time::Duration::from_millis(400),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.exit_code, 124);
+    let pid = std::fs::read_to_string(policy.scratch.join("pid")).unwrap();
+    assert!(
+        process_is_gone(pid.trim()),
+        "pid {pid} survived the timeout"
+    );
+    std::fs::remove_dir_all(&policy.scratch).unwrap();
+}

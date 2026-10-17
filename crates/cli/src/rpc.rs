@@ -5,15 +5,19 @@
 
 use std::sync::Arc;
 
-use jensen_harness_core::providers::StopReason as EngineStopReason;
+use jensen_harness_core::agent::{
+    AgentError, DEFAULT_MAX_TURNS, PromptOutcome, PromptStop, Session,
+};
+use jensen_harness_core::toolset::ToolSet;
 use jensen_harness_protocol::{
-    Frame, Request, RequestId, Response, ResponseError, SessionNewResult, SessionPromptParams,
-    SessionPromptResult, StopReason, classify, error_code,
+    Frame, Request, RequestId, Response, ResponseError, Savings, SessionNewParams,
+    SessionNewResult, SessionPromptParams, SessionPromptResult, StopReason, Usage, classify,
+    error_code,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::engine::Engine;
+use crate::engine::{Engine, LiveSession};
 
 /// # Errors
 /// Returns an I/O error if a response cannot be written; a request that
@@ -60,7 +64,7 @@ where
 
 async fn dispatch(engine: &Engine, request: Request) -> Response {
     match request.method.as_str() {
-        "session.new" => session_new(engine, request.id).await,
+        "session.new" => session_new(engine, request.id, request.params).await,
         "session.prompt" => session_prompt(engine, request.id, request.params).await,
         other => Response::err(
             request.id,
@@ -72,53 +76,100 @@ async fn dispatch(engine: &Engine, request: Request) -> Response {
     }
 }
 
-async fn session_new(engine: &Engine, id: RequestId) -> Response {
+fn invalid_params(id: RequestId, message: impl Into<String>) -> Response {
+    Response::err(id, ResponseError::new(error_code::INVALID_PARAMS, message))
+}
+
+fn parse_params<T: serde::de::DeserializeOwned>(
+    method: &str,
+    params: Option<Value>,
+) -> Result<T, String> {
+    let params = params.ok_or_else(|| format!("{method} needs params"))?;
+    serde_json::from_value(params).map_err(|error| error.to_string())
+}
+
+async fn session_new(engine: &Engine, id: RequestId, params: Option<Value>) -> Response {
+    let params: SessionNewParams = match parse_params("session.new", params) {
+        Ok(params) => params,
+        Err(message) => return invalid_params(id, message),
+    };
+    if params.max_turns == Some(0) {
+        return invalid_params(id, "max_turns must be at least 1");
+    }
+    let (provider, model) = match engine.models.resolve(params.model.as_deref()) {
+        Ok(chosen) => chosen,
+        Err(error) => return invalid_params(id, error.to_string()),
+    };
+    let tools = match ToolSet::for_worktree(std::path::Path::new(&params.worktree)) {
+        Ok(tools) => tools,
+        Err(error) => {
+            return invalid_params(id, format!("worktree {}: {error}", params.worktree));
+        }
+    };
+    let session = Session::new(model, tools, params.max_turns.unwrap_or(DEFAULT_MAX_TURNS));
     let session_id = uuid::Uuid::new_v4().to_string();
     engine.sessions.lock().await.insert(
         session_id.clone(),
-        jensen_harness_core::agent::Session::new(),
+        Arc::new(tokio::sync::Mutex::new(LiveSession { provider, session })),
     );
-    let result = SessionNewResult { session_id };
-    Response::ok(id, json!(result))
+    Response::ok(id, json!(SessionNewResult { session_id }))
+}
+
+fn stop_reason(stop: PromptStop) -> StopReason {
+    match stop {
+        PromptStop::EndTurn => StopReason::EndTurn,
+        PromptStop::StopSequence => StopReason::StopSequence,
+        PromptStop::MaxTokens => StopReason::MaxTokens,
+        PromptStop::Refusal => StopReason::Refusal,
+        PromptStop::TurnLimit => StopReason::TurnLimit,
+    }
+}
+
+fn prompt_result(
+    outcome: &PromptOutcome,
+) -> Result<SessionPromptResult, std::num::TryFromIntError> {
+    Ok(SessionPromptResult {
+        stop_reason: stop_reason(outcome.stop),
+        model_calls: outcome.model_calls,
+        usage: Usage {
+            input_tokens: outcome.usage.input_tokens,
+            output_tokens: outcome.usage.output_tokens,
+            cache_read_tokens: outcome.usage.cache_read_tokens,
+            cache_write_tokens: outcome.usage.cache_write_tokens,
+        },
+        savings: Savings {
+            raw_tokens: u64::try_from(outcome.savings.raw_tokens)?,
+            sent_tokens: u64::try_from(outcome.savings.sent_tokens)?,
+        },
+    })
 }
 
 async fn session_prompt(engine: &Engine, id: RequestId, params: Option<Value>) -> Response {
-    let Some(params) = params else {
-        return Response::err(
-            id,
-            ResponseError::new(error_code::INVALID_PARAMS, "session.prompt needs params"),
-        );
-    };
-    let params: SessionPromptParams = match serde_json::from_value(params) {
+    let params: SessionPromptParams = match parse_params("session.prompt", params) {
         Ok(params) => params,
-        Err(error) => {
-            return Response::err(
-                id,
-                ResponseError::new(error_code::INVALID_PARAMS, error.to_string()),
-            );
-        }
+        Err(message) => return invalid_params(id, message),
     };
-    let mut sessions = engine.sessions.lock().await;
-    let Some(session) = sessions.get_mut(&params.session_id) else {
-        return Response::err(
-            id,
-            ResponseError::new(
-                error_code::INVALID_PARAMS,
-                format!("no such session: {}", params.session_id),
-            ),
-        );
-    };
-    match session
-        .prompt(engine.provider.as_ref(), &params.message)
+    let live = engine
+        .sessions
+        .lock()
         .await
-    {
-        Ok(stop_reason) => {
-            let stop_reason = match stop_reason {
-                EngineStopReason::EndTurn => StopReason::EndTurn,
-                EngineStopReason::MaxTokens => StopReason::MaxTokens,
-            };
-            Response::ok(id, json!(SessionPromptResult { stop_reason }))
+        .get(&params.session_id)
+        .cloned();
+    let Some(live) = live else {
+        return invalid_params(id, format!("no such session: {}", params.session_id));
+    };
+    let mut live = live.lock().await;
+    let LiveSession { provider, session } = &mut *live;
+    match session.prompt(provider.as_ref(), &params.message).await {
+        Ok(outcome) => match prompt_result(&outcome) {
+            Ok(result) => Response::ok(id, json!(result)),
+            Err(error) => Response::err(id, ResponseError::internal(error.to_string())),
+        },
+        Err(error @ AgentError::Provider(_)) => {
+            Response::err(id, ResponseError::internal(format!("provider: {error}")))
         }
-        Err(error) => Response::err(id, ResponseError::internal(error.to_string())),
+        Err(error @ AgentError::Tool(_)) => {
+            Response::err(id, ResponseError::internal(format!("tool: {error}")))
+        }
     }
 }

@@ -1,10 +1,10 @@
 //! The 5 built-in tools. `read`, `edit`, `glob` and `grep` touch the
-//! filesystem directly and enforce confinement themselves, by rejecting any
-//! path that resolves outside the worktree: a fixed, enumerable path check
-//! is enough for them, since their operations are not arbitrary code.
-//! `shell` runs an arbitrary command, which no static check can vet, so it
-//! is the one tool that goes through a real [`Sandbox`](crate::sandbox::Sandbox)
-//! backend, enforced by the operating system rather than by this crate.
+//! filesystem through a [`Worktree`], a `cap-std` directory capability that
+//! resolves every path relative to the worktree and refuses `..`, absolute
+//! paths and symlinks that lead out of it, at the syscall rather than by a
+//! string check. `shell` runs an arbitrary command, which no static check
+//! can vet, so it alone goes through a real [`Sandbox`](crate::sandbox::Sandbox)
+//! backend, enforced by the operating system.
 
 pub mod edit;
 pub mod glob;
@@ -12,9 +12,11 @@ pub mod grep;
 pub mod read;
 pub mod shell;
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use crate::sandbox::is_within;
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ToolError {
@@ -24,51 +26,53 @@ pub enum ToolError {
     Io(String),
     #[error("the sandbox refused this command: {0}")]
     Sandbox(String),
+    #[error("{find:?} matches {count} times in {path}; make it unique or set replace_all")]
+    Ambiguous {
+        path: String,
+        find: String,
+        count: usize,
+    },
 }
 
-/// Resolves `relative` against `worktree` and refuses it if the result
-/// escapes the worktree, the same containment rule the sandbox backends
-/// enforce for `shell`, applied here in code for tools that touch files
-/// directly instead of spawning a process.
-///
-/// A lexical check alone is not enough: a symlink planted inside the
-/// worktree, pointing outside it, would pass a purely textual containment
-/// check while still reading or writing wherever the link actually points.
-/// Once the lexical check accepts a path, the target is required to exist
-/// (every caller here only ever reads, edits or lists real files) and its
-/// fully resolved form is checked against the worktree's own resolved form,
-/// so a symlink escape is caught the same way the lexical escape is.
-///
-/// Accepted limitation: there is a window between this check and the read
-/// or write a caller performs right after it, in which the path on disk
-/// could in principle be swapped for a symlink. This is accepted for now
-/// rather than closed (closing it properly needs directory-fd based,
-/// `openat(O_NOFOLLOW)` style resolution, so the check and the use are the
-/// same open file description, not two path lookups) because nothing in
-/// this phase or the next runs a second, concurrent writer against the
-/// same worktree while one tool call is in flight: that only starts once
-/// the DAG executor's fan-out ships. Revisit this before fan-out lands.
-///
-/// # Errors
-/// [`ToolError::OutsideWorktree`] if `relative` escapes the worktree
-/// lexically or, once resolved, by a symlink; [`ToolError::Io`] if the
-/// target does not exist or cannot be resolved.
-pub fn resolve_within(worktree: &Path, relative: &str) -> Result<PathBuf, ToolError> {
-    let candidate = worktree.join(relative);
-    if !is_within(worktree, &candidate) {
-        return Err(ToolError::OutsideWorktree {
-            path: relative.to_string(),
-        });
+/// A worktree opened as a capability. Holding one is the only way the file
+/// tools reach the disk.
+#[derive(Debug)]
+pub struct Worktree {
+    pub(crate) dir: Dir,
+    pub(crate) root: PathBuf,
+}
+
+impl Worktree {
+    /// # Errors
+    /// [`ToolError::Io`] if `root` is missing or not a directory.
+    pub fn open(root: &Path) -> Result<Self, ToolError> {
+        let root = std::fs::canonicalize(root).map_err(|error| ToolError::Io(error.to_string()))?;
+        let dir = Dir::open_ambient_dir(&root, ambient_authority())
+            .map_err(|error| ToolError::Io(error.to_string()))?;
+        Ok(Self { dir, root })
     }
-    let canonical_worktree =
-        std::fs::canonicalize(worktree).map_err(|error| ToolError::Io(error.to_string()))?;
-    let canonical_candidate =
-        std::fs::canonicalize(&candidate).map_err(|error| ToolError::Io(error.to_string()))?;
-    if canonical_candidate.starts_with(&canonical_worktree) {
-        Ok(canonical_candidate)
-    } else {
-        Err(ToolError::OutsideWorktree {
+
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The path of `relative` once symlinks are resolved, relative to the
+    /// worktree. A path that leads out of it is refused.
+    pub(crate) fn canonical(&self, relative: &str) -> Result<PathBuf, ToolError> {
+        self.dir
+            .canonicalize(relative)
+            .map_err(|error| io_error(&error, relative))
+    }
+}
+
+/// `cap-std` reports an escape as `PermissionDenied`.
+pub(crate) fn io_error(error: &std::io::Error, relative: &str) -> ToolError {
+    if error.kind() == ErrorKind::PermissionDenied {
+        ToolError::OutsideWorktree {
             path: relative.to_string(),
-        })
+        }
+    } else {
+        ToolError::Io(format!("{relative}: {error}"))
     }
 }
