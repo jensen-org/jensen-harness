@@ -1,18 +1,18 @@
-[package]
-name = "jensen-harness"
+[workspace]
+resolver = "3"
+members = ["crates/protocol", "crates/core", "crates/cli"]
+
+[workspace.package]
 version = "0.1.0"
 publish = false
 edition = "2024"
 rust-version = "1.97"
-license = "LicenseRef-Jensen-EULA-1.0"
+license = "UNLICENSED"
 
-[lib]
-path = "src/lib.rs"
-
-[lints.rust]
+[workspace.lints.rust]
 unused_qualifications = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
