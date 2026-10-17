@@ -27,13 +27,15 @@ jensen-harness-protocol = { path = "crates/protocol" }
 async-trait = "0.1"
 serde_json = "1"
 tempfile = "3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time", "sync"] }
 uuid = { version = "1", features = ["v4"] }
 wiremock = "0.6"
 keyring-core = "1"
 rusqlite = "0.40"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+dagrs = "0.9"
+tokio-util = "0.7"
 
 [lints]
 workspace = true
