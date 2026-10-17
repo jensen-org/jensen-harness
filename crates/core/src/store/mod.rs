@@ -26,6 +26,10 @@ pub enum StoreError {
     Migration(String),
     #[error("the state file could not be prepared: {0}")]
     Io(String),
+    #[error(
+        "the state database {0} is in use by another jensen-harness process; stop it, or pass --state with another path"
+    )]
+    InUse(String),
     #[error("a stored amount does not fit in the type it is read as")]
     Overflow,
     #[error("the state database holds something this version cannot read: {0}")]
@@ -60,6 +64,10 @@ pub(crate) fn now_ms() -> Result<i64, StoreError> {
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    /// Holds the advisory lock for as long as any clone of the store lives.
+    /// The operating system releases it when the process dies, so a crash
+    /// never leaves the database locked out.
+    _lock: Option<Arc<std::fs::File>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -87,10 +95,11 @@ impl Store {
         }
         file.open(path)
             .map_err(|error| StoreError::Io(format!("{}: {error}", path.display())))?;
+        let lock = Self::lock(path, &file)?;
         let mut conn = Connection::open(path)?;
         conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get::<_, String>(0))?;
         schema::prepare(&mut conn)?;
-        Ok(Self::wrap(conn))
+        Ok(Self::wrap(conn, Some(lock)))
     }
 
     /// A database that lives only as long as the process, for tests.
@@ -100,12 +109,33 @@ impl Store {
     pub fn in_memory() -> Result<Self, StoreError> {
         let mut conn = Connection::open_in_memory()?;
         schema::prepare(&mut conn)?;
-        Ok(Self::wrap(conn))
+        Ok(Self::wrap(conn, None))
     }
 
-    fn wrap(conn: Connection) -> Self {
+    /// Two daemons on one state file would both drive a session that is
+    /// open in the journal, so the second one is refused.
+    fn lock(path: &Path, options: &std::fs::OpenOptions) -> Result<Arc<std::fs::File>, StoreError> {
+        let mut lock_path = path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock_path = std::path::PathBuf::from(lock_path);
+        let file = options
+            .open(&lock_path)
+            .map_err(|error| StoreError::Io(format!("{}: {error}", lock_path.display())))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Arc::new(file)),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                Err(StoreError::InUse(path.display().to_string()))
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                Err(StoreError::Io(format!("{}: {error}", lock_path.display())))
+            }
+        }
+    }
+
+    fn wrap(conn: Connection, lock: Option<Arc<std::fs::File>>) -> Self {
         Self {
             conn: Arc::new(Mutex::new(conn)),
+            _lock: lock,
         }
     }
 

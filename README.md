@@ -61,7 +61,8 @@ buckets and, when the model has a price, micro dollars. At the soft cap (80% by 
 once to wrap up; at the hard cap the next call is not made and the prompt ends with `budget_exhausted`.
 
 A session with no cap from the request or from `[budget]` in the config gets a built in cap of 5,000,000
-tokens. Prices are integer micro dollars per million tokens in `[pricing]`, with a version that is journaled
+tokens. Cache reads count in full, so a session with a large context reaches it sooner than the bill would
+suggest; set `max_tokens` to suit. Prices are integer micro dollars per million tokens in `[pricing]`, with a version that is journaled
 with every call. A cost cap on a model with no price is refused.
 
 ## Journal and recovery
@@ -80,6 +81,10 @@ finished are reported to the model as interrupted rather than run twice.
 Every call is journaled with its model, tokens, cost, price version, latency and cache hit ratio, and is
 also a `tracing` event. For a provider that reports cache tokens, a hit ratio under 80% after the first
 call raises one `alert.cache_low` event per session.
+
+Only one daemon may use a state file at a time: a second one is refused at startup, so two processes
+can never both continue the same prompt. The lock is released by the operating system when a process
+dies, including by `kill -9`. Run a second daemon with its own `--state`.
 
 The journal holds transcripts and tool output, which can include whatever the model read. It is not
 redacted.

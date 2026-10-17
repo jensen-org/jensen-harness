@@ -159,7 +159,7 @@ fn model_id(address: &str) -> String {
 
 fn interrupted(tool: &str) -> ToolReply {
     let text = format!(
-        "ERROR {tool}: this call was interrupted by a restart and may have partly run. Check the current state before trying again."
+        "ERROR {tool}: this call was interrupted by a restart and may have partly run, or may still be running. Check the current state before trying again."
     );
     let tokens = crate::compact::tokens(&text);
     ToolReply {

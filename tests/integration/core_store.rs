@@ -392,3 +392,38 @@ async fn the_file_is_private_survives_a_reopen_and_a_newer_schema_is_refused() {
     let error = Store::open(&path).unwrap_err();
     assert!(matches!(error, StoreError::Migration(_)), "{error:?}");
 }
+
+#[tokio::test]
+async fn a_second_process_on_the_same_state_file_is_refused_until_the_first_lets_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.sqlite");
+    let first = Store::open(&path).unwrap();
+    let shared = first.clone();
+
+    let refused = Store::open(&path).unwrap_err();
+    assert!(matches!(refused, StoreError::InUse(_)), "{refused:?}");
+    assert!(refused.to_string().contains("--state"));
+
+    drop(first);
+    assert!(
+        matches!(Store::open(&path).unwrap_err(), StoreError::InUse(_)),
+        "a clone still holds the file"
+    );
+    shared
+        .append(event("s", EventKind::PromptStarted, json!({})))
+        .await
+        .unwrap();
+
+    drop(shared);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(reopened.events("s").await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn different_state_files_and_in_memory_stores_never_collide() {
+    let dir = tempfile::tempdir().unwrap();
+    let _one = Store::open(&dir.path().join("one.sqlite")).unwrap();
+    let _two = Store::open(&dir.path().join("two.sqlite")).unwrap();
+    let _memory_a = Store::in_memory().unwrap();
+    let _memory_b = Store::in_memory().unwrap();
+}

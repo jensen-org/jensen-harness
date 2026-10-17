@@ -10,21 +10,36 @@ use super::CompactError;
 /// The directory must be one the sandboxed shell cannot write: a command
 /// that could plant a symlink at the next handle would turn the harness's
 /// own unsandboxed write, or a later read, into a write or read anywhere.
-/// Handles are also checked against the ones actually issued, and a file is
-/// only ever created fresh.
+/// Handles carry a random namespace and are checked against the ones this
+/// store actually issued, so a handle left in a restored transcript can never
+/// name some later command's output, and a file is only ever created fresh.
 #[derive(Debug)]
 pub struct RawStore {
     dir: PathBuf,
+    namespace: String,
     next: AtomicU64,
 }
 
 impl RawStore {
     #[must_use]
     pub fn new(dir: impl Into<PathBuf>) -> Self {
+        let mut namespace = uuid::Uuid::new_v4().simple().to_string();
+        namespace.truncate(8);
         Self {
             dir: dir.into(),
+            namespace,
             next: AtomicU64::new(1),
         }
+    }
+
+    fn handle(&self, number: u64) -> String {
+        format!("r-{}-{number}", self.namespace)
+    }
+
+    /// The handle the next [`RawStore::tee`] will return.
+    #[must_use]
+    pub fn next_handle(&self) -> String {
+        self.handle(self.next.load(Ordering::Relaxed))
     }
 
     /// # Errors
@@ -38,7 +53,7 @@ impl RawStore {
             std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))
                 .map_err(store_error)?;
         }
-        let handle = format!("r{}", self.next.fetch_add(1, Ordering::Relaxed));
+        let handle = self.handle(self.next.fetch_add(1, Ordering::Relaxed));
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -54,9 +69,14 @@ impl RawStore {
     /// [`CompactError::UnknownHandle`] for a handle this store did not issue.
     pub fn slice(&self, handle: &str, offset: usize, limit: usize) -> Result<String, CompactError> {
         let issued = handle
-            .strip_prefix('r')
-            .filter(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
-            .and_then(|digits| digits.parse::<u64>().ok())
+            .strip_prefix("r-")
+            .and_then(|rest| rest.split_once('-'))
+            .filter(|(namespace, digits)| {
+                *namespace == self.namespace
+                    && !digits.is_empty()
+                    && digits.chars().all(|c| c.is_ascii_digit())
+            })
+            .and_then(|(_, digits)| digits.parse::<u64>().ok())
             .is_some_and(|number| number >= 1 && number < self.next.load(Ordering::Relaxed));
         if !issued {
             return Err(CompactError::UnknownHandle(handle.to_string()));

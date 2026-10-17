@@ -494,3 +494,79 @@ async fn a_journal_that_cannot_be_replayed_is_an_error_naming_the_event() {
     };
     assert!(message.contains("session.created"), "{message}");
 }
+
+fn handle_in(text: &str) -> String {
+    let after = text.split("expand ").nth(1).unwrap();
+    after.split(']').next().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn an_expand_handle_from_before_a_restore_is_refused_and_never_names_new_output() {
+    let dir = tempdir().unwrap();
+    let store = Store::in_memory().unwrap();
+    let mut first = session_over(
+        store.clone(),
+        tool_set(dir.path()),
+        session_config(20, default_budget()),
+    )
+    .await;
+    let provider = Scripted::of(vec![
+        calls_tool("s1", "shell", json!({"command": "seq 1 500"})),
+        says("done"),
+    ]);
+    first.prompt(&provider, "list numbers").await.unwrap();
+    let ContentBlock::ToolResult { content, .. } = &first.turns()[2].content[0] else {
+        panic!("expected a tool result");
+    };
+    let old_handle = handle_in(content);
+    let session_id = first.session_id().to_string();
+
+    let recovered = Recovered::load(&store, &session_id).await.unwrap();
+    let mut restored = Session::restore(store, recovered, tool_set(dir.path()))
+        .await
+        .unwrap();
+    let provider = Scripted::of(vec![
+        reply(
+            vec![
+                tool_use("s2", "shell", json!({"command": "seq 1000 1400"})),
+                tool_use("x1", "expand", json!({"handle": old_handle})),
+            ],
+            StopReason::ToolUse,
+        ),
+        says("done"),
+    ]);
+    restored
+        .prompt(&provider, "list more numbers")
+        .await
+        .unwrap();
+
+    let second_request = provider.request(1);
+    let results = &second_request.turns.last().unwrap().content;
+    let ContentBlock::ToolResult {
+        content: new_output,
+        ..
+    } = &results[0]
+    else {
+        panic!("expected the shell result");
+    };
+    let new_handle = handle_in(new_output);
+    assert_ne!(
+        new_handle, old_handle,
+        "a restored session must not reuse a handle"
+    );
+    let ContentBlock::ToolResult {
+        content, is_error, ..
+    } = &results[1]
+    else {
+        panic!("expected the expand result");
+    };
+    assert!(*is_error, "{content}");
+    assert!(
+        content.contains("not a handle this session issued"),
+        "{content}"
+    );
+    assert!(
+        !content.contains("1400"),
+        "the old handle must not read the new output"
+    );
+}
