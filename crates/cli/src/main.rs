@@ -5,7 +5,7 @@
 //! the thin process entry point.
 
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -140,6 +140,14 @@ fn state_path(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     Ok(base.join("jensen-harness").join("state.sqlite"))
 }
 
+fn owner_only_dir(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
 fn build_engine(
     registry: ProviderRegistry,
     model: Option<String>,
@@ -157,15 +165,21 @@ fn build_engine(
     if let Some(address) = models.default_model.as_deref() {
         models.resolve(Some(address))?;
     }
-    let checkpoints = path.parent().map_or_else(
+    let directory = path.parent().map_or_else(
         || PathBuf::from("workflow-runs"),
         |dir| dir.join("workflow-runs"),
     );
+    owner_only_dir(&directory).with_context(|| {
+        format!(
+            "the workflow checkpoint directory {} could not be prepared",
+            directory.display()
+        )
+    })?;
     let checkpoints =
-        jensen_harness_workflow::FileRunStore::new(&checkpoints).with_context(|| {
+        jensen_harness_workflow::FileRunStore::new(&directory).with_context(|| {
             format!(
                 "the workflow checkpoint directory {} could not be opened",
-                checkpoints.display()
+                directory.display()
             )
         })?;
     Ok(Engine::new(Box::new(models), store, budget).with_checkpoints(Arc::new(checkpoints)))

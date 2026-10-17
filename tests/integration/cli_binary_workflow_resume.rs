@@ -130,6 +130,12 @@ async fn a_workflow_killed_mid_agent_call_resumes_to_the_same_channels_as_an_uni
     assert!(uninterrupted.get("error").is_none(), "{uninterrupted}");
     assert_eq!(uninterrupted["result"]["status"], "succeeded");
     drop(daemon);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let checkpoints = reference.state.parent().unwrap().join("workflow-runs");
+        let mode = std::fs::metadata(checkpoints).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "checkpoints hold channel state");
+    }
 
     let first_server = MockServer::start().await;
     mount(
