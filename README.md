@@ -120,6 +120,11 @@ take `base_url` (GitHub Enterprise, self hosted GitLab) and `api_key_env` or `ap
 (`jensen-harness auth set github`). The forge is read from the host of `origin`; anything else is
 `UnknownForge`. See `providers.example.toml` and `workflows/examples/implement.yaml`.
 
+A run whose promotion was blocked still reports status `succeeded`, because the workflow itself ran to
+its end; read `outcomes` (`promote` is `ok`, `blocked` or `conflict`) before assuming work landed. Nodes
+that run outside a writer's scope get a detached worktree at the integration head, so they see promoted
+work and never write into your checkout.
+
 Not covered yet: a denylist of dangerous commands, a command audit log, circuit breakers on repeated
 failures, and waiting for CI results from the forge.
 
