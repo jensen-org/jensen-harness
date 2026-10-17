@@ -321,6 +321,13 @@ impl NodeRunner {
             .map_err(|error| RunError::Engine(error.to_string()))?;
         let labels = object_of(snapshot, &self.keys.labels)
             .map_err(|error| RunError::Engine(error.to_string()))?;
+        if let NodeSpec::Publish(publish) = &self.node {
+            let outcomes = object_of(snapshot, &self.keys.outcome)
+                .map_err(|error| RunError::Engine(error.to_string()))?;
+            if outcomes.get(&publish.from) != Some(&Value::String("ok".to_owned())) {
+                return Ok(false);
+            }
+        }
         for edge in &self.incoming {
             if live.get(&edge.from) != Some(&Value::Bool(true)) {
                 continue;
@@ -427,7 +434,7 @@ impl StepParticipant for NodeRunner {
 
     fn read_keys(&self) -> BTreeSet<String> {
         let mut keys: BTreeSet<String> = self.keys.channels.keys().cloned().collect();
-        keys.extend([LIVE, LABELS].map(str::to_owned));
+        keys.extend([LIVE, LABELS, OUTCOME].map(str::to_owned));
         keys
     }
 

@@ -5,6 +5,7 @@ use jensen_harness_core::budget::BudgetSettings;
 use jensen_harness_core::budget::Caps;
 use jensen_harness_core::toolset::{Access, ToolSet};
 use jensen_harness_promote::Isolation;
+use jensen_harness_promote::forge::ForgeTarget;
 use jensen_harness_protocol::{
     RequestId, Response, WorkflowCancelParams, WorkflowCancelResult, WorkflowResumeParams,
     WorkflowRunResult, WorkflowStartParams, WorkflowStatus, WorkflowStatusParams,
@@ -45,6 +46,10 @@ impl Host for EngineHost {
 
     fn isolation(&self) -> Option<&Isolation> {
         self.isolation.as_ref()
+    }
+
+    fn forge(&self, remote_url: &str) -> Result<ForgeTarget, RunError> {
+        self.engine.models.forge_target(remote_url)
     }
 
     fn worktree(&self) -> &Path {

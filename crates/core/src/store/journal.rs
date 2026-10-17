@@ -22,6 +22,8 @@ pub enum EventKind {
     NodeFinished,
     NodeSkipped,
     WorkflowFinished,
+    PublishStarted,
+    PublishFinished,
 }
 
 impl EventKind {
@@ -43,6 +45,8 @@ impl EventKind {
             Self::NodeFinished => "node.finished",
             Self::NodeSkipped => "node.skipped",
             Self::WorkflowFinished => "workflow.finished",
+            Self::PublishStarted => "publish.started",
+            Self::PublishFinished => "publish.finished",
         }
     }
 
@@ -64,6 +68,8 @@ impl EventKind {
             "node.finished" => Self::NodeFinished,
             "node.skipped" => Self::NodeSkipped,
             "workflow.finished" => Self::WorkflowFinished,
+            "publish.started" => Self::PublishStarted,
+            "publish.finished" => Self::PublishFinished,
             _ => return None,
         })
     }

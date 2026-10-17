@@ -23,6 +23,22 @@ adapter = "deepseek"
 base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_API_KEY"
 
+# A workflow names a role, never a vendor. These bind roles to models.
+[roles]
+explore = "anthropic/claude-sonnet-5-5"
+implement = "anthropic/claude-sonnet-5-5"
+
+# Where a publish node opens a pull request (github) or merge request
+# (gitlab). The forge is picked from the host of the repository's origin.
+# Set base_url for GitHub Enterprise or a self hosted GitLab. Store a token
+# with `jensen-harness auth set github`.
+[forges.github]
+api_key_keychain = {}
+
+[forges.gitlab]
+base_url = "https://gitlab.example.com"
+api_key_env = "GITLAB_TOKEN"
+
 # Prices are integer micro dollars per million tokens. These are examples only:
 # copy the current numbers from your provider's price list and bump the version.
 [pricing]

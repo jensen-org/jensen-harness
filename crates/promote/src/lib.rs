@@ -1,9 +1,11 @@
 mod diff;
 mod error;
 mod flags;
+pub mod forge;
 pub mod gates;
 pub mod isolation;
 mod merge;
+pub mod push;
 mod secrets;
 mod worktree;
 

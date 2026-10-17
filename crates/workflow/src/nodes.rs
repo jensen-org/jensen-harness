@@ -12,7 +12,9 @@ use jensen_harness_core::store::{
     EventKind, LedgerError, NewEvent, NewScope, ScopeKind, Store, StoreError,
 };
 use jensen_harness_core::toolset::Access;
-use jensen_harness_promote::{Finding, GateConfig, Gates, PromoteError, Provenance};
+use jensen_harness_promote::forge::open_request;
+use jensen_harness_promote::push::push;
+use jensen_harness_promote::{Finding, GateConfig, Gates, Isolation, PromoteError, Provenance};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -20,6 +22,7 @@ use crate::error::RunError;
 use crate::expr;
 use crate::reducer;
 use crate::runtime::Shared;
+use crate::spec::PublishNode;
 use crate::spec::{
     AgentNode, CommandNode, LoopNode, NodeSpec, PromoteNode, RouterNode, ToolAccess, VerifierNode,
 };
@@ -198,9 +201,7 @@ async fn run_kind(
         NodeSpec::Router(router) => run_router(id, router, inputs),
         NodeSpec::Loop(looped) => Box::pin(run_loop(shared, id, looped, inputs)).await,
         NodeSpec::Promote(promote) => run_promote(shared, promote, inputs).await,
-        NodeSpec::Publish(_) => Err(RunError::Engine(format!(
-            "node `{id}` is a publish node and needs forge configuration"
-        ))),
+        NodeSpec::Publish(publish) => run_publish(shared, id, publish).await,
     }
 }
 
@@ -656,5 +657,50 @@ async fn run_promote(
         label: None,
         outcome: "ok".to_owned(),
         detail: Some(json!({"flags": flags, "how": format!("{:?}", promoted.how)})),
+    })
+}
+
+async fn run_publish(shared: &Shared, id: &str, node: &PublishNode) -> Result<Finished, RunError> {
+    let isolation = shared.isolation()?;
+    let remote = isolation.remote_url("origin")?;
+    let target = shared.host.forge(&remote)?;
+    let head = format!("jensen/{}", shared.run_id);
+    let base = isolation.base_branch()?;
+    journal_event(
+        shared,
+        EventKind::PublishStarted,
+        json!({"node": id, "branch": head, "forge": target.kind.as_str(), "project": target.project}),
+    )
+    .await?;
+    push(
+        isolation.repo_path(),
+        &remote,
+        &Isolation::integration_ref(&shared.run_id),
+        &head,
+        &target,
+    )
+    .await?;
+    let published = open_request(&target, &head, &base, &node.title, &node.body).await?;
+    journal_event(
+        shared,
+        EventKind::PublishFinished,
+        json!({"node": id, "url": published.url, "number": published.number, "existing": published.existing}),
+    )
+    .await?;
+    let value = json!({
+        "forge": published.forge.as_str(),
+        "url": published.url,
+        "number": published.number,
+        "existing": published.existing,
+    });
+    Ok(Finished {
+        outputs: node
+            .output
+            .as_ref()
+            .map(|channel| Values::from([(channel.clone(), value)]))
+            .unwrap_or_default(),
+        label: None,
+        outcome: "ok".to_owned(),
+        detail: None,
     })
 }

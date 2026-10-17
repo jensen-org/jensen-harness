@@ -48,6 +48,13 @@ impl Host for RepoHost {
         Some(&self.isolation)
     }
 
+    fn forge(
+        &self,
+        remote_url: &str,
+    ) -> Result<jensen_harness_promote::forge::ForgeTarget, RunError> {
+        Err(jensen_harness_promote::PromoteError::UnknownForge(remote_url.to_owned()).into())
+    }
+
     fn budget(&self) -> &BudgetSettings {
         &self.budget
     }

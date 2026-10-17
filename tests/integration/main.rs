@@ -15,6 +15,7 @@ mod promote_worktree;
 mod workflow_cli;
 mod workflow_dagrs_contract;
 mod workflow_promote;
+mod workflow_publish;
 mod workflow_rpc;
 mod workflow_run;
 mod workflow_spec;

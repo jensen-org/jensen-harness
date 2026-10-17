@@ -5,6 +5,7 @@ use jensen_harness_core::budget::BudgetSettings;
 use jensen_harness_core::providers::Provider;
 use jensen_harness_core::toolset::{Access, ToolSet};
 use jensen_harness_promote::Isolation;
+use jensen_harness_promote::forge::ForgeTarget;
 
 use crate::error::RunError;
 
@@ -21,6 +22,8 @@ pub trait Host: Send + Sync {
     fn worktree(&self) -> &Path;
 
     fn isolation(&self) -> Option<&Isolation>;
+
+    fn forge(&self, remote_url: &str) -> Result<ForgeTarget, RunError>;
 
     fn budget(&self) -> &BudgetSettings;
 }

@@ -41,6 +41,14 @@ pub struct ProviderEntry {
     pub api_key_keychain: Option<KeychainRef>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeEntry {
+    pub base_url: Option<String>,
+    pub api_key_env: Option<String>,
+    pub api_key_keychain: Option<KeychainRef>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BudgetFile {
@@ -57,6 +65,8 @@ struct ConfigFile {
     #[serde(default)]
     roles: BTreeMap<String, String>,
     #[serde(default)]
+    forges: BTreeMap<String, ForgeEntry>,
+    #[serde(default)]
     pricing: PricingTable,
     budget: Option<BudgetFile>,
 }
@@ -66,6 +76,7 @@ pub struct ProviderRegistry {
     default_model: Option<String>,
     providers: BTreeMap<String, ProviderEntry>,
     roles: BTreeMap<String, String>,
+    forges: BTreeMap<String, ForgeEntry>,
     budget: BudgetSettings,
 }
 
@@ -150,11 +161,24 @@ impl ProviderRegistry {
                 )));
             }
         }
+        for (name, entry) in &file.forges {
+            if !matches!(name.as_str(), "github" | "gitlab") {
+                return Err(ProviderError::Config(format!(
+                    "forge {name} is not github or gitlab"
+                )));
+            }
+            if entry.api_key_env.is_some() == entry.api_key_keychain.is_some() {
+                return Err(ProviderError::Config(format!(
+                    "forge {name} needs exactly one of api_key_env and api_key_keychain"
+                )));
+            }
+        }
         let budget = budget_settings(&file)?;
         Ok(Self {
             default_model: file.default_model,
             providers: file.providers,
             roles: file.roles,
+            forges: file.forges,
             budget,
         })
     }
@@ -182,6 +206,25 @@ impl ProviderRegistry {
     /// [`ProviderError::Config`] for a provider that reads its key from the
     /// environment instead.
     pub fn keychain_location(&self, provider_id: &str) -> Result<(String, String), ProviderError> {
+        if !self.providers.contains_key(provider_id)
+            && let Some(forge) = self.forges.get(provider_id)
+        {
+            let reference = forge.api_key_keychain.as_ref().ok_or_else(|| {
+                ProviderError::Config(format!(
+                    "forge {provider_id} reads its key from the environment, not the keychain"
+                ))
+            })?;
+            return Ok((
+                reference
+                    .service
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_KEYCHAIN_SERVICE.to_string()),
+                reference
+                    .user
+                    .clone()
+                    .unwrap_or_else(|| format!("forge-{provider_id}")),
+            ));
+        }
         let entry = self
             .providers
             .get(provider_id)
@@ -201,6 +244,42 @@ impl ProviderRegistry {
                 .clone()
                 .unwrap_or_else(|| provider_id.to_string()),
         ))
+    }
+
+    #[must_use]
+    pub fn forge(&self, name: &str) -> Option<&ForgeEntry> {
+        self.forges.get(name)
+    }
+
+    /// # Errors
+    /// [`ProviderError::MissingApiKey`] when the token is not there and
+    /// [`ProviderError::Secret`] when the keychain itself fails.
+    pub fn forge_token(
+        &self,
+        name: &str,
+        secrets: &dyn SecretSource,
+    ) -> Result<String, ProviderError> {
+        let entry = self
+            .forges
+            .get(name)
+            .ok_or_else(|| ProviderError::UnknownProvider(name.to_string()))?;
+        if let Some(variable) = &entry.api_key_env {
+            return secrets
+                .env(variable)
+                .ok_or_else(|| ProviderError::MissingApiKey {
+                    provider: name.to_string(),
+                    hint: format!("set the {variable} environment variable"),
+                });
+        }
+        let (service, user) = self.keychain_location(name)?;
+        secrets
+            .keychain(&service, &user)?
+            .ok_or_else(|| ProviderError::MissingApiKey {
+                provider: name.to_string(),
+                hint: format!(
+                    "store it with `jensen-harness auth set {name}` (keychain {service}/{user})"
+                ),
+            })
     }
 
     fn api_key(

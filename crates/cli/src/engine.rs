@@ -7,7 +7,9 @@ use jensen_harness_core::providers::config::ProviderRegistry;
 use jensen_harness_core::providers::{Provider, ProviderError};
 use jensen_harness_core::secrets::SecretSource;
 use jensen_harness_core::store::{Store, StoreError};
-use jensen_harness_workflow::{CancellationToken, MemoryRunStore, RunStore};
+use jensen_harness_promote::PromoteError;
+use jensen_harness_promote::forge::{ForgeKind, ForgeTarget, Secret, parse_remote};
+use jensen_harness_workflow::{CancellationToken, MemoryRunStore, RunError, RunStore};
 use tokio::sync::Mutex;
 
 /// A provider and the `provider_id/model_id` address it was chosen by.
@@ -25,6 +27,11 @@ pub trait ModelSource: Send + Sync {
 
     /// The `provider_id/model_id` a workflow role is bound to, if any.
     fn role(&self, role: &str) -> Option<String>;
+
+    /// # Errors
+    /// [`RunError`] when the remote is not a forge this config knows or its
+    /// token is missing.
+    fn forge_target(&self, remote_url: &str) -> Result<ForgeTarget, RunError>;
 }
 
 /// One provider and model for every session.
@@ -34,6 +41,10 @@ pub struct FixedModel {
 }
 
 impl ModelSource for FixedModel {
+    fn forge_target(&self, remote_url: &str) -> Result<ForgeTarget, RunError> {
+        Err(PromoteError::UnknownForge(remote_url.to_owned()).into())
+    }
+
     fn role(&self, _role: &str) -> Option<String> {
         Some(format!("{}/{}", self.provider.id(), self.model))
     }
@@ -54,6 +65,35 @@ pub struct ConfiguredModels {
 }
 
 impl ModelSource for ConfiguredModels {
+    fn forge_target(&self, remote_url: &str) -> Result<ForgeTarget, RunError> {
+        let remote = parse_remote(remote_url)?;
+        for (name, kind, default_host) in [
+            ("github", ForgeKind::GitHub, "github.com"),
+            ("gitlab", ForgeKind::GitLab, "gitlab.com"),
+        ] {
+            let Some(entry) = self.registry.forge(name) else {
+                continue;
+            };
+            let host = match &entry.base_url {
+                Some(base) => url::Url::parse(base)
+                    .ok()
+                    .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+                    .unwrap_or_default(),
+                None => default_host.to_owned(),
+            };
+            if host == remote.host || (entry.base_url.is_some() && default_host == remote.host) {
+                let token = self.registry.forge_token(name, self.secrets.as_ref())?;
+                return Ok(ForgeTarget {
+                    kind,
+                    api_base: entry.base_url.clone(),
+                    project: remote.project,
+                    token: Secret::new(token),
+                });
+            }
+        }
+        Err(PromoteError::UnknownForge(remote_url.to_owned()).into())
+    }
+
     fn role(&self, role: &str) -> Option<String> {
         self.registry.role(role).map(str::to_string)
     }

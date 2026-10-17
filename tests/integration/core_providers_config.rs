@@ -266,3 +266,47 @@ fn a_role_bound_to_an_undeclared_provider_is_refused() {
     let error = ProviderRegistry::from_toml(&broken).unwrap_err();
     assert!(matches!(error, ProviderError::Config(message) if message.contains("implement")));
 }
+
+#[test]
+fn forges_take_a_token_source_and_an_optional_base_url() {
+    let config = format!(
+        "{CONFIG}\n[forges.github]\napi_key_keychain = {{}}\n\n[forges.gitlab]\nbase_url = \"https://git.corp.example\"\napi_key_env = \"GL\"\n"
+    );
+    let registry = ProviderRegistry::from_toml(&config).unwrap();
+    assert_eq!(
+        registry.keychain_location("github").unwrap(),
+        ("jensen-harness".to_owned(), "forge-github".to_owned())
+    );
+    assert_eq!(
+        registry.forge("gitlab").unwrap().base_url.as_deref(),
+        Some("https://git.corp.example")
+    );
+    let secrets = Secrets::with_env(&[("GL", "token-value")]);
+    assert_eq!(
+        registry.forge_token("gitlab", &secrets).unwrap(),
+        "token-value"
+    );
+    assert!(matches!(
+        registry.forge_token("github", &secrets),
+        Err(ProviderError::MissingApiKey { .. })
+    ));
+}
+
+#[test]
+fn a_forge_must_be_github_or_gitlab_with_exactly_one_token_source() {
+    let unknown = format!("{CONFIG}\n[forges.bitbucket]\napi_key_env = \"X\"\n");
+    assert!(matches!(
+        ProviderRegistry::from_toml(&unknown),
+        Err(ProviderError::Config(_))
+    ));
+    let both = format!("{CONFIG}\n[forges.github]\napi_key_env = \"X\"\napi_key_keychain = {{}}\n");
+    assert!(matches!(
+        ProviderRegistry::from_toml(&both),
+        Err(ProviderError::Config(_))
+    ));
+    let none = format!("{CONFIG}\n[forges.github]\n");
+    assert!(matches!(
+        ProviderRegistry::from_toml(&none),
+        Err(ProviderError::Config(_))
+    ));
+}

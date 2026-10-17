@@ -225,6 +225,8 @@ fn replay(session_id: &str, events: &[Event]) -> Result<Recovered, AgentError> {
             | EventKind::NodeStarted
             | EventKind::NodeFinished
             | EventKind::NodeSkipped
+            | EventKind::PublishStarted
+            | EventKind::PublishFinished
             | EventKind::WorkflowFinished => {
                 return Err(AgentError::Journal(format!(
                     "{} {} is a workflow event in a session journal",

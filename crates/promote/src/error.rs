@@ -28,6 +28,14 @@ pub enum PromoteError {
     WrongRun { reviewed: String, run: String },
     #[error("the merged result of `{node}` is blocked: {reasons}")]
     MergedResultBlocked { node: String, reasons: String },
+    #[error("the remote `{0}` is not a GitHub or GitLab repository this configuration knows")]
+    UnknownForge(String),
+    #[error("the forge refused: {0}")]
+    Forge(String),
+    #[error("pushing failed: {0}")]
+    Push(String),
+    #[error("the repository has no branch checked out to open the request against")]
+    NoBaseBranch,
     #[error("path {0:?} in a worktree is not valid UTF-8")]
     NonUtf8Path(PathBuf),
     #[error("{0}")]
