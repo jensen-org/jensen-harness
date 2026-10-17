@@ -1,0 +1,20 @@
+[package]
+name = "jensen-harness-promote"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+blake3 = "1.8.7"
+git2 = "0.21.0"
+gix = "0.89.0"
+ignore = "0.4.33"
+thiserror = "2"
+
+[lints]
+workspace = true
