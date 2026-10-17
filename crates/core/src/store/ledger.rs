@@ -473,6 +473,28 @@ impl Store {
             .await
     }
 
+    /// Open reservations of `scope_id` and every scope beneath it.
+    ///
+    /// # Errors
+    /// [`StoreError`] when the read fails.
+    pub async fn open_reservations_under(&self, scope_id: &str) -> Result<Vec<String>, StoreError> {
+        let scope_id = scope_id.to_string();
+        self.with(move |conn| {
+            let sql = format!(
+                "{SUBTREE}
+                 SELECT call_id FROM ledger
+                 WHERE scope_id IN (SELECT id FROM subtree) AND kind = 'reserve'
+                   AND NOT EXISTS (SELECT 1 FROM ledger ended WHERE ended.call_id = ledger.call_id
+                                   AND ended.kind IN ('settle', 'release'))
+                 ORDER BY seq"
+            );
+            let mut statement = conn.prepare(&sql)?;
+            let rows = statement.query_map(params![scope_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| row.map_err(StoreError::from)).collect()
+        })
+        .await
+    }
+
     /// Reservations that are still open: the calls a crash left in flight.
     ///
     /// # Errors

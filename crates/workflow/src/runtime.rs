@@ -31,6 +31,7 @@ const START: &str = "wf.start";
 const END: &str = "wf.end";
 const SCHEMA_VERSION: u32 = 1;
 const SOFT_PERCENT: u8 = 80;
+const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 
 pub struct Shared {
     pub run_id: String,
@@ -101,6 +102,13 @@ pub struct RunReport {
     pub outcomes: BTreeMap<String, String>,
     pub failure: Option<RunError>,
     pub super_steps: u64,
+}
+
+struct Ended {
+    dagrs_run_id: String,
+    status: dagrs::RunStatus,
+    cause: Option<String>,
+    super_steps: u64,
 }
 
 pub struct StartRequest {
@@ -582,37 +590,146 @@ impl Runner {
         self.drive(&shared, seed, cancel).await
     }
 
+    fn prepare(
+        shared: &Arc<Shared>,
+        checkpoints: &Arc<dyn RunStore>,
+        seed: Values,
+        cancel: CancellationToken,
+    ) -> Result<(RunConfig, ParticipantId, RunDependencies), RunError> {
+        let (schema, keys) = build_schema(&shared.workflow)?;
+        let keys = Arc::new(keys);
+        let (participants, start) = registry(shared, &keys, seed)?;
+        let initial: State = schema.empty_state();
+        let dependencies =
+            RunDependencies::new(participants, Arc::clone(checkpoints), schema, initial)?
+                .with_cancellation(cancel);
+        let steps = u64::try_from(shared.workflow.waves().len()).unwrap_or(u64::MAX);
+        let mut config = RunConfig::new()
+            .with_thread_id(shared.run_id.as_str())
+            .with_max_super_steps(steps.saturating_add(3))
+            .with_cancel_grace_period(CANCEL_GRACE);
+        if let Some(limit) = shared.workflow.spec().limits.max_super_steps {
+            config = config.with_max_super_steps(limit);
+        }
+        Ok((config, start, dependencies))
+    }
+
     async fn drive(
         &self,
         shared: &Arc<Shared>,
         seed: Values,
         cancel: CancellationToken,
     ) -> Result<RunReport, RunError> {
-        let (schema, keys) = build_schema(&shared.workflow)?;
-        let keys = Arc::new(keys);
-        let (participants, start) = registry(shared, &keys, seed)?;
-        let initial: State = schema.empty_state();
-        let dependencies =
-            RunDependencies::new(participants, Arc::clone(&self.checkpoints), schema, initial)?
-                .with_cancellation(cancel);
-        let steps = u64::try_from(shared.workflow.waves().len()).unwrap_or(u64::MAX);
-        let mut config = RunConfig::new()
-            .with_thread_id(shared.run_id.as_str())
-            .with_max_super_steps(steps.saturating_add(3));
-        if let Some(limit) = shared.workflow.spec().limits.max_super_steps {
-            config = config.with_max_super_steps(limit);
-        }
+        let (config, start, dependencies) = Self::prepare(shared, &self.checkpoints, seed, cancel)?;
         let report = HarnessRun::start(config, [start], dependencies).await?;
-        self.report(shared, report).await
+        self.report(
+            shared,
+            Ended {
+                dagrs_run_id: report.run_id,
+                status: report.status,
+                cause: report.terminal_cause.map(|cause| cause.to_string()),
+                super_steps: report.super_steps_completed,
+            },
+        )
+        .await
     }
 
-    async fn report(
+    /// Continues a run from its last committed wave. A run that already ended
+    /// is reported as it ended, never run again.
+    ///
+    /// # Errors
+    /// [`RunError::UnknownRun`] when the store has no such run and
+    /// [`RunError::SpecChanged`] when `workflow` is not the spec it started
+    /// from.
+    pub async fn resume(
         &self,
-        shared: &Arc<Shared>,
-        report: dagrs::RunReport,
+        workflow: Workflow,
+        run_id: &str,
+        cancel: CancellationToken,
     ) -> Result<RunReport, RunError> {
+        let record = self
+            .store
+            .workflow_run(run_id)
+            .await?
+            .ok_or_else(|| RunError::UnknownRun(run_id.to_owned()))?;
+        if record.spec_hash != workflow.hash() {
+            return Err(RunError::SpecChanged {
+                run_id: run_id.to_owned(),
+                recorded: record.spec_hash,
+                offered: workflow.hash().to_owned(),
+            });
+        }
+        let inputs: Values = serde_json::from_str(&record.inputs)
+            .map_err(|error| RunError::Engine(error.to_string()))?;
+        let shared = Shared::new(
+            run_id.to_owned(),
+            self.store.clone(),
+            Arc::clone(&self.host),
+            workflow,
+        )?;
+        let runs = self.checkpoints.list_runs(run_id, None, 1).await?;
+        let latest = runs
+            .runs()
+            .first()
+            .ok_or_else(|| RunError::UnknownRun(run_id.to_owned()))?;
+        let checkpoint = self
+            .checkpoints
+            .load_latest_checkpoint_for_run(latest.run_id())
+            .await?;
+        if checkpoint.status() != dagrs::RunStatus::Running
+            && checkpoint.status() != dagrs::RunStatus::Interrupted
+        {
+            return self
+                .report(
+                    &shared,
+                    Ended {
+                        dagrs_run_id: latest.run_id().to_owned(),
+                        status: checkpoint.status(),
+                        cause: checkpoint.terminal_error_message().map(str::to_owned),
+                        super_steps: checkpoint.completed_super_steps(),
+                    },
+                )
+                .await;
+        }
+        let mut seed = Values::new();
+        for (name, channel) in &shared.workflow.spec().channels {
+            if let Some(init) = &channel.init {
+                seed.insert(name.clone(), init.clone());
+            }
+        }
+        seed.extend(inputs);
+        nodes::journal_event(
+            &shared,
+            EventKind::WorkflowStarted,
+            json!({"resumed": true}),
+        )
+        .await?;
+        let (_, _, dependencies) = Self::prepare(&shared, &self.checkpoints, seed, cancel)?;
+        let report =
+            HarnessRun::resume(run_id, latest.latest_checkpoint_id(), dependencies).await?;
+        self.report(
+            &shared,
+            Ended {
+                dagrs_run_id: report.run_id,
+                status: report.status,
+                cause: report.terminal_cause.map(|cause| cause.to_string()),
+                super_steps: report.super_steps_completed,
+            },
+        )
+        .await
+    }
+
+    async fn release_in_flight(&self, shared: &Shared) -> Result<usize, RunError> {
+        let open = self.store.open_reservations_under(&shared.run_id).await?;
+        for call_id in &open {
+            self.store.release(call_id, None).await?;
+        }
+        Ok(open.len())
+    }
+
+    async fn report(&self, shared: &Arc<Shared>, ended: Ended) -> Result<RunReport, RunError> {
         let failure = shared.take_failure();
-        let status = match (&failure, report.status) {
+        let status = match (&failure, ended.status) {
             (Some(RunError::BudgetExhausted { .. }), _) | (_, dagrs::RunStatus::BudgetExceeded) => {
                 RunStatus::BudgetExceeded
             }
@@ -621,21 +738,27 @@ impl Runner {
             (_, dagrs::RunStatus::DeadlineExceeded) => RunStatus::DeadlineExceeded,
             _ => RunStatus::Failed,
         };
-        let (channels, outcomes) = self.final_state(shared, &report.run_id).await?;
+        let released = if status == RunStatus::Succeeded {
+            0
+        } else {
+            self.release_in_flight(shared).await?
+        };
+        let (channels, outcomes) = self.final_state(shared, &ended.dagrs_run_id).await?;
         let failure = failure.or_else(|| {
-            (status != RunStatus::Succeeded && status != RunStatus::Cancelled)
-                .then(|| {
-                    report
-                        .terminal_cause
-                        .as_ref()
-                        .map(|cause| RunError::Engine(cause.to_string()))
-                })
-                .flatten()
+            if status == RunStatus::Succeeded || status == RunStatus::Cancelled {
+                None
+            } else {
+                ended.cause.map(RunError::Engine)
+            }
         });
         nodes::journal_event(
             shared,
             EventKind::WorkflowFinished,
-            json!({"status": format!("{status:?}")}),
+            json!({
+                "status": format!("{status:?}"),
+                "released_reservations": released,
+                "cause": failure.as_ref().map(ToString::to_string),
+            }),
         )
         .await?;
         Ok(RunReport {
@@ -644,7 +767,7 @@ impl Runner {
             channels,
             outcomes,
             failure,
-            super_steps: report.super_steps_completed,
+            super_steps: ended.super_steps,
         })
     }
 

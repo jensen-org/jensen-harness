@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use dagrs::{MemoryRunStore, RunStore};
@@ -17,7 +19,7 @@ use jensen_harness_workflow::{
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::common::{Scripted, says, tool_set};
+use crate::common::{Scripted, calls_tool, path_input, says, tool_set};
 
 struct TestHost {
     provider: Arc<dyn Provider>,
@@ -352,4 +354,316 @@ async fn a_workflow_without_agents_never_calls_a_model() {
     )
     .await;
     assert_eq!(report.status, RunStatus::Succeeded);
+}
+
+#[derive(Debug)]
+struct HangsAfter {
+    inner: Scripted,
+    answered: usize,
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl Provider for HangsAfter {
+    fn id(&self) -> &str {
+        "scripted"
+    }
+
+    async fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, ProviderError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call >= self.answered {
+            std::future::pending::<()>().await;
+        }
+        self.inner.complete(request).await
+    }
+}
+
+async fn wait_until(what: &str, condition: impl Fn() -> bool) {
+    let waited = std::time::Instant::now();
+    while !condition() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(waited.elapsed() < Duration::from_secs(10), "{what}");
+    }
+}
+
+const READER: &str = r#"
+version: 1
+name: reader
+channels:
+  findings: { schema: { type: array }, reducer: append }
+nodes:
+  scout: { kind: agent, role: r, prompt: look, writes: [findings], max_turns: 5 }
+"#;
+
+fn file_runner(fixture: &Fixture, checkpoints: &std::path::Path) -> Runner {
+    Runner {
+        store: fixture.store.clone(),
+        host: fixture.host.clone(),
+        checkpoints: Arc::new(dagrs::FileRunStore::new(checkpoints).unwrap()),
+    }
+}
+
+#[tokio::test]
+async fn an_agent_killed_mid_call_resumes_its_own_journal_without_repeating_a_completed_call() {
+    let checkpoints = tempfile::tempdir().unwrap();
+    let hanging = Arc::new(HangsAfter {
+        inner: Scripted::of(vec![calls_tool("t1", "read", path_input("a.txt"))]),
+        answered: 1,
+        calls: AtomicUsize::new(0),
+    });
+    let first = fixture(hanging.clone());
+    std::fs::write(first.root.join("a.txt"), "alpha").unwrap();
+    let running = {
+        let runner = file_runner(&first, checkpoints.path());
+        tokio::spawn(async move {
+            runner
+                .start(
+                    load(READER).unwrap(),
+                    StartRequest {
+                        run_id: "k1".to_owned(),
+                        inputs: Values::new(),
+                        caps: Caps::default(),
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+        })
+    };
+    wait_until("the second model call never started", || {
+        hanging.calls.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+    running.abort();
+    let _ = running.await;
+
+    let resumed_provider = Arc::new(Scripted::of(vec![says(r#"{"findings": ["alpha"]}"#)]));
+    let second = Fixture {
+        _dir: tempfile::tempdir().unwrap(),
+        root: first.root.clone(),
+        store: first.store.clone(),
+        host: Arc::new(TestHost {
+            provider: resumed_provider.clone(),
+            dir: first.root.clone(),
+            budget: BudgetSettings::default(),
+        }),
+    };
+    let report = file_runner(&second, checkpoints.path())
+        .resume(load(READER).unwrap(), "k1", CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert!(report.failure.is_none(), "{:?}", report.failure);
+    assert_eq!(report.status, RunStatus::Succeeded);
+    assert_eq!(report.channels.get("findings"), Some(&json!(["alpha"])));
+    assert_eq!(
+        resumed_provider.calls(),
+        1,
+        "only the lost call is made again"
+    );
+    let sent = format!("{:?}", resumed_provider.request(0).turns);
+    assert!(
+        sent.contains("alpha"),
+        "the finished tool result is replayed"
+    );
+    let chain = first.store.usage("k1:scout:0").await.unwrap();
+    assert!(
+        first
+            .store
+            .open_reservations_under("k1")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(chain.iter().any(|u| u.spent_tokens > 0));
+}
+
+const CHAIN: &str = r#"
+version: 1
+name: chain
+channels:
+  one: { schema: { type: object } }
+  two: { schema: { type: object } }
+nodes:
+  first: { kind: command, run: 'echo x >> first.log', output: one }
+  second:
+    kind: command
+    run: 'touch second.started; while [ ! -f go ]; do sleep 0.05; done; echo y'
+    reads: [one]
+    output: two
+    idempotent: true
+edges:
+  - { from: first, to: second }
+"#;
+
+#[tokio::test]
+async fn a_run_dropped_between_waves_resumes_without_rerunning_finished_nodes() {
+    let checkpoints = tempfile::tempdir().unwrap();
+    let first = fixture(scripted(vec![]));
+    let running = {
+        let runner = file_runner(&first, checkpoints.path());
+        tokio::spawn(async move {
+            runner
+                .start(
+                    load(CHAIN).unwrap(),
+                    StartRequest {
+                        run_id: "c1".to_owned(),
+                        inputs: Values::new(),
+                        caps: Caps::default(),
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+        })
+    };
+    let marker = first.root.join("second.started");
+    wait_until("the second node never started", || marker.exists()).await;
+    running.abort();
+    let _ = running.await;
+    std::fs::write(first.root.join("go"), "").unwrap();
+
+    let report = file_runner(&first, checkpoints.path())
+        .resume(load(CHAIN).unwrap(), "c1", CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert!(report.failure.is_none(), "{:?}", report.failure);
+    assert_eq!(report.status, RunStatus::Succeeded);
+    assert_eq!(
+        std::fs::read_to_string(first.root.join("first.log")).unwrap(),
+        "x\n",
+        "the finished node ran once"
+    );
+    assert_eq!(
+        report.channels.get("two").unwrap().get("stdout"),
+        Some(&json!("y\n"))
+    );
+    assert_eq!(
+        report.channels.get("one").unwrap().get("stdout"),
+        Some(&json!(""))
+    );
+}
+
+#[tokio::test]
+async fn a_finished_run_is_reported_not_run_again() {
+    let checkpoints = tempfile::tempdir().unwrap();
+    let fixture = fixture(scripted(vec![]));
+    let yaml = counting("channels.count >= 1", 3);
+    let runner = file_runner(&fixture, checkpoints.path());
+    let first = runner
+        .start(
+            load(&yaml).unwrap(),
+            StartRequest {
+                run_id: "d1".to_owned(),
+                inputs: Values::new(),
+                caps: Caps::default(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let again = runner
+        .resume(load(&yaml).unwrap(), "d1", CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(again.status, RunStatus::Succeeded);
+    assert_eq!(again.channels, first.channels);
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("c"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+}
+
+#[tokio::test]
+async fn a_changed_spec_is_refused_and_an_unknown_run_is_unknown() {
+    let checkpoints = tempfile::tempdir().unwrap();
+    let fixture = fixture(scripted(vec![]));
+    let runner = file_runner(&fixture, checkpoints.path());
+    let yaml = counting("channels.count >= 1", 3);
+    runner
+        .start(
+            load(&yaml).unwrap(),
+            StartRequest {
+                run_id: "s1".to_owned(),
+                inputs: Values::new(),
+                caps: Caps::default(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let changed = counting("channels.count >= 2", 3);
+    let refused = runner
+        .resume(load(&changed).unwrap(), "s1", CancellationToken::new())
+        .await;
+    assert!(matches!(refused, Err(RunError::SpecChanged { .. })));
+    let unknown = runner
+        .resume(load(&yaml).unwrap(), "nope", CancellationToken::new())
+        .await;
+    assert!(matches!(unknown, Err(RunError::UnknownRun(_))));
+}
+
+#[tokio::test]
+async fn cancelling_stops_the_nodes_and_leaves_no_held_reservation() {
+    let hanging = Arc::new(HangsAfter {
+        inner: Scripted::of(vec![]),
+        answered: 0,
+        calls: AtomicUsize::new(0),
+    });
+    let fixture = fixture(hanging.clone());
+    let cancel = CancellationToken::new();
+    let running = {
+        let runner = runner(&fixture);
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            runner
+                .start(
+                    load(READER).unwrap(),
+                    StartRequest {
+                        run_id: "x1".to_owned(),
+                        inputs: Values::new(),
+                        caps: Caps::default(),
+                    },
+                    cancel,
+                )
+                .await
+        })
+    };
+    wait_until("the model call never started", || {
+        hanging.calls.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    assert!(
+        !fixture
+            .store
+            .open_reservations_under("x1")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    cancel.cancel();
+    let report = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("a cancelled run ends promptly")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(report.status, RunStatus::Cancelled);
+    assert!(
+        fixture
+            .store
+            .open_reservations_under("x1")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let events = fixture.store.events("wf:x1").await.unwrap();
+    let last = events.last().unwrap();
+    assert_eq!(last.kind, EventKind::WorkflowFinished);
+    assert_eq!(last.payload.get("released_reservations"), Some(&json!(1)));
 }
