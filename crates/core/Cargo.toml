@@ -40,6 +40,7 @@ cap-fs-ext = "4"
 rusqlite = { version = "0.40", features = ["bundled"] }
 rusqlite_migration = "2.6"
 ulid = "3"
+blake3 = "1"
 
 [lints]
 workspace = true

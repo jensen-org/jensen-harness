@@ -26,6 +26,7 @@ pub enum LedgerError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeKind {
     Run,
+    Node,
     Session,
 }
 
@@ -33,6 +34,7 @@ impl ScopeKind {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Run => "run",
+            Self::Node => "node",
             Self::Session => "session",
         }
     }
@@ -141,6 +143,7 @@ fn scope_row(conn: &Connection, id: &str) -> Result<ScopeRow, StoreError> {
     };
     let kind = match kind.as_str() {
         "run" => ScopeKind::Run,
+        "node" => ScopeKind::Node,
         "session" => ScopeKind::Session,
         other => return Err(StoreError::Corrupt(format!("scope kind {other:?}"))),
     };

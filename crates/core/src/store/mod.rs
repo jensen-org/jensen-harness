@@ -6,6 +6,7 @@
 pub mod journal;
 pub mod ledger;
 mod schema;
+pub mod workflow;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

@@ -12,6 +12,7 @@ mod protocol_frame;
 
 mod workflow_dagrs_contract;
 mod workflow_spec;
+mod workflow_state;
 
 mod core_agent;
 mod core_compact;
