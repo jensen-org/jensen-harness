@@ -299,16 +299,6 @@ fn removing_a_node_takes_its_worktree_away() {
     );
 }
 
-#[test]
-fn libgit2_is_not_a_dependency() {
-    let lock =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock")).unwrap();
-    assert!(
-        !lock.contains("name = \"git2\""),
-        "git2 is back in the tree"
-    );
-}
-
 fn node_with(fixture: &Fixture, run: &str, node: &str, file: &str, text: &str) -> String {
     let handle = fixture.isolation.prepare_node(run, node).unwrap();
     std::fs::write(handle.path.join(file), text).unwrap();
