@@ -17,6 +17,13 @@ pub enum EventKind {
     PromptFinished,
     BudgetExhausted,
     CacheLow,
+    WorkflowStarted,
+    NodeStarted,
+    NodeFinished,
+    NodeSkipped,
+    WorkflowFinished,
+    PublishStarted,
+    PublishFinished,
 }
 
 impl EventKind {
@@ -33,6 +40,13 @@ impl EventKind {
             Self::PromptFinished => "prompt.finished",
             Self::BudgetExhausted => "budget.exhausted",
             Self::CacheLow => "alert.cache_low",
+            Self::WorkflowStarted => "workflow.started",
+            Self::NodeStarted => "node.started",
+            Self::NodeFinished => "node.finished",
+            Self::NodeSkipped => "node.skipped",
+            Self::WorkflowFinished => "workflow.finished",
+            Self::PublishStarted => "publish.started",
+            Self::PublishFinished => "publish.finished",
         }
     }
 
@@ -49,6 +63,13 @@ impl EventKind {
             "prompt.finished" => Self::PromptFinished,
             "budget.exhausted" => Self::BudgetExhausted,
             "alert.cache_low" => Self::CacheLow,
+            "workflow.started" => Self::WorkflowStarted,
+            "node.started" => Self::NodeStarted,
+            "node.finished" => Self::NodeFinished,
+            "node.skipped" => Self::NodeSkipped,
+            "workflow.finished" => Self::WorkflowFinished,
+            "publish.started" => Self::PublishStarted,
+            "publish.finished" => Self::PublishFinished,
             _ => return None,
         })
     }

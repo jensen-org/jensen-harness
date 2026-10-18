@@ -7,3 +7,4 @@
 pub mod engine;
 pub mod rpc;
 pub mod socket;
+pub mod workflow;

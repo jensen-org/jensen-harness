@@ -15,15 +15,20 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-struct Daemon {
-    child: Child,
+pub struct Daemon {
+    pub child: Child,
     stdin: ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
 }
 
 impl Daemon {
-    fn start(config: &Path, state: &Path) -> Self {
+    pub fn start(config: &Path, state: &Path) -> Self {
+        Self::start_with(config, state, &[])
+    }
+
+    pub fn start_with(config: &Path, state: &Path, env: &[(&str, &str)]) -> Self {
         let mut child = Command::new(binary_path())
+            .envs(env.iter().copied())
             .arg("--config")
             .arg(config)
             .arg("--state")
@@ -45,7 +50,7 @@ impl Daemon {
         }
     }
 
-    async fn send(&mut self, request: Value) {
+    pub async fn send(&mut self, request: Value) {
         self.stdin
             .write_all(format!("{request}\n").as_bytes())
             .await
@@ -53,7 +58,7 @@ impl Daemon {
         self.stdin.flush().await.unwrap();
     }
 
-    async fn response(&mut self, id: i64) -> Value {
+    pub async fn response(&mut self, id: i64) -> Value {
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let line = self
@@ -72,7 +77,7 @@ impl Daemon {
         .expect("no response in time")
     }
 
-    async fn call(&mut self, id: i64, method: &str, params: Value) -> Value {
+    pub async fn call(&mut self, id: i64, method: &str, params: Value) -> Value {
         self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
             .await;
         self.response(id).await
@@ -116,7 +121,7 @@ fn fixture(server: &MockServer) -> Fixture {
     }
 }
 
-async fn wait_for_requests(server: &MockServer, count: usize) {
+pub async fn wait_for_requests(server: &MockServer, count: usize) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if server.received_requests().await.unwrap().len() >= count {
@@ -129,7 +134,7 @@ async fn wait_for_requests(server: &MockServer, count: usize) {
     .expect("the provider never saw the expected requests");
 }
 
-fn count(connection: &rusqlite::Connection, sql: &str) -> i64 {
+pub fn count(connection: &rusqlite::Connection, sql: &str) -> i64 {
     connection.query_row(sql, [], |row| row.get(0)).unwrap()
 }
 

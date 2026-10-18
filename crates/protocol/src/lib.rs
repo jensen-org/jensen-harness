@@ -6,6 +6,8 @@
 //! a real schema a third party frontend can generate bindings from, instead
 //! of reverse-engineering the wire format from this crate's source.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -281,4 +283,71 @@ pub struct SessionResumeParams {
 pub struct SessionUpdateParams {
     pub session_id: String,
     pub delta: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowStartParams {
+    pub worktree: String,
+    pub workflow: String,
+    #[serde(default)]
+    pub inputs: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<BudgetParams>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStatus {
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+    BudgetExceeded,
+    DeadlineExceeded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowRunResult {
+    pub run_id: String,
+    pub status: WorkflowStatus,
+    pub channels: BTreeMap<String, Value>,
+    pub outcomes: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    pub super_steps: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowStatusParams {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowStatusResult {
+    pub run_id: String,
+    pub spec_hash: String,
+    pub status: WorkflowStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowResumeParams {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowCancelParams {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowCancelResult {
+    pub cancelled: bool,
 }

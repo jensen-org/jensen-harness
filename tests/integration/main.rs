@@ -10,6 +10,18 @@ mod common;
 
 mod protocol_frame;
 
+mod promote_gates;
+mod promote_worktree;
+mod workflow_cli;
+mod workflow_dagrs_contract;
+mod workflow_promote;
+mod workflow_publish;
+mod workflow_rpc;
+mod workflow_run;
+mod workflow_spec;
+mod workflow_state;
+mod workflow_templates;
+
 mod core_agent;
 mod core_compact;
 mod core_ledger;
@@ -25,15 +37,23 @@ mod core_sandbox_seatbelt_denies;
 mod core_secrets;
 mod core_store;
 mod core_telemetry;
+mod core_tool_providers;
 mod core_tools_confinement;
 mod core_tools_edit;
 mod core_tools_glob;
 mod core_tools_grep;
 mod core_tools_read;
 mod core_tools_shell;
+mod ext_context;
+mod ext_host;
+mod ext_mcp;
+mod ext_skills;
 
 mod cli_binary_crash_resume;
 mod cli_binary_e2e;
+mod cli_binary_extensions;
+mod cli_binary_workflow_promote;
+mod cli_binary_workflow_resume;
 mod cli_daemon_round_trip;
 mod cli_rpc;
 mod cli_socket;

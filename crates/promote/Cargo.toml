@@ -1,0 +1,36 @@
+[package]
+name = "jensen-harness-promote"
+version.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+base64 = "0.23.1"
+blake3 = "1.8.7"
+gitlab = "0.1904.0"
+gix = "0.89.0"
+globset = "0.4.20"
+http = "1.5.0"
+ignore = "0.4.33"
+octocrab = "0.54.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "process", "time"] }
+tree-sitter = "0.27"
+tree-sitter-go = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+url = "2.5.8"
+yara-x = "1.21.0"
+
+[lints]
+workspace = true

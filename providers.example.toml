@@ -23,6 +23,64 @@ adapter = "deepseek"
 base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_API_KEY"
 
+# A workflow names a role, never a vendor. These bind roles to models.
+[roles]
+explore = "anthropic/claude-sonnet-5-5"
+implement = "anthropic/claude-sonnet-5-5"
+
+# Where a publish node opens a pull request (github) or merge request
+# (gitlab). The forge is picked from the host of the repository's origin.
+# Set base_url for GitHub Enterprise or a self hosted GitLab. Store a token
+# with `jensen-harness auth set github`.
+[forges.github]
+api_key_keychain = {}
+
+[forges.gitlab]
+base_url = "https://gitlab.example.com"
+api_key_env = "GITLAB_TOKEN"
+
+# Skills (Agent Skills format) are read from ~/.config/jensen-harness/skills and
+# each library path's skills directory. A repository's own skills directory is
+# only loaded when you allow it, because a project can ship its own prompts.
+[skills]
+allow_project = false
+
+# Where agent templates (and their skills directories) live besides the
+# agents directory next to a workflow. The checkout's own library is a good start.
+# [library]
+# paths = ["/path/to/jensen-harness/agents"]
+
+# MCP servers are declared here, once, by you. A workflow can attach one by
+# name but never defines a command. A stdio server runs inside the OS sandbox
+# of the node that attaches it, with only the listed environment variables and
+# the network closed unless the entry opens it.
+#   access   decides whether the server may write the node's worktree.
+#   mutating decides whether tools that may change things are offered at all;
+#            without it only tools the server marks read only are visible.
+#   tools    limits which of its tools any node can see.
+[mcp.servers.excalidraw]
+command = "excalidraw-mcp"
+args = ["--stdio"]
+env_allow = []
+network = "none"
+access = "read_only"
+mutating = true
+tools = []
+
+[mcp.servers.figma]
+url = "https://mcp.figma.com/mcp"
+network = "full"
+mutating = true
+api_key_keychain = {}
+
+# Language servers answer `lsp` context sources (diagnostics, symbols,
+# references). Each query starts the server inside the node's OS sandbox,
+# read only, with the network closed, and stops it afterwards.
+[lsp.servers.rust]
+command = "rust-analyzer"
+language = "rust"
+timeout_secs = 120
+
 # Prices are integer micro dollars per million tokens. These are examples only:
 # copy the current numbers from your provider's price list and bump the version.
 [pricing]

@@ -56,6 +56,7 @@ pub fn profile(policy: &SandboxPolicy) -> String {
         "(allow process-fork)".to_string(),
         "(allow process-exec)".to_string(),
         "(allow file-read*)".to_string(),
+        "(allow sysctl-read)".to_string(),
         "(allow signal (target self))".to_string(),
         format!("(allow file-write* (subpath \"{}\"))", quote(&worktree)),
         format!(

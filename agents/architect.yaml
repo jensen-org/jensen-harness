@@ -1,0 +1,19 @@
+description: Studies the code and draws the architecture in Excalidraw.
+role: architect
+prompt: Study the code you were given, draw the architecture, and answer with one JSON object holding the plan and the diagram.
+tools: read_only
+max_turns: 12
+mcp: [excalidraw]
+inputs:
+  task: {}
+outputs:
+  plan:
+    schema: { type: object }
+  diagram:
+    schema: { type: object }
+context:
+  inherit:
+    - { channel: task, mode: full }
+  fetch:
+    - { source: treesitter, paths: ["src/**/*.rs"], view: symbols, max_tokens: 1500 }
+    - { source: lsp, server: rust, query: symbols, paths: ["src/lib.rs"], mode: lazy }

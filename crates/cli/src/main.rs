@@ -5,7 +5,7 @@
 //! the thin process entry point.
 
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -53,6 +53,72 @@ enum Command {
         #[command(subcommand)]
         action: AuthAction,
     },
+    /// Check and draw workflow files.
+    Workflow {
+        #[command(subcommand)]
+        action: WorkflowAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkflowAction {
+    /// Load a workflow file and report whether it is valid.
+    Validate {
+        file: PathBuf,
+        #[arg(long)]
+        resolved: bool,
+        #[arg(long)]
+        library: Vec<PathBuf>,
+    },
+    /// Print a workflow file's graph in Graphviz DOT.
+    Dot {
+        file: PathBuf,
+        #[arg(long)]
+        library: Vec<PathBuf>,
+    },
+}
+
+fn load_workflow(
+    file: &std::path::Path,
+    library: &[PathBuf],
+) -> anyhow::Result<jensen_harness_workflow::Workflow> {
+    let yaml = std::fs::read_to_string(file)
+        .with_context(|| format!("the workflow {} could not be read", file.display()))?;
+    let library = jensen_harness_workflow::library::Library::for_workflow(
+        file,
+        library,
+        dirs::config_dir().map(|base| base.join("jensen-harness").join("agents")),
+    );
+    jensen_harness_workflow::load_with(&yaml, &library)
+        .with_context(|| format!("the workflow {} is invalid", file.display()))
+}
+
+fn workflow_command(action: &WorkflowAction) -> anyhow::Result<()> {
+    let mut out = std::io::stdout();
+    match action {
+        WorkflowAction::Validate {
+            file,
+            resolved,
+            library,
+        } => {
+            let workflow = load_workflow(file, library)?;
+            if *resolved {
+                writeln!(out, "{}", serde_json::to_string_pretty(workflow.spec())?)?;
+                return Ok(());
+            }
+            writeln!(
+                out,
+                "ok {} {} ({} waves)",
+                workflow.spec().name,
+                workflow.hash(),
+                workflow.waves().len()
+            )?;
+        }
+        WorkflowAction::Dot { file, library } => {
+            writeln!(out, "{}", load_workflow(file, library)?.dot())?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Subcommand)]
@@ -100,6 +166,14 @@ fn state_path(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     Ok(base.join("jensen-harness").join("state.sqlite"))
 }
 
+fn owner_only_dir(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
 fn build_engine(
     registry: ProviderRegistry,
     model: Option<String>,
@@ -109,6 +183,8 @@ fn build_engine(
     let store = Store::open(&path)
         .with_context(|| format!("the state database {} could not be opened", path.display()))?;
     let budget = registry.budget_settings().clone();
+    let library = registry.library_paths().to_vec();
+    let project_skills = registry.allow_project_skills();
     let models = ConfiguredModels {
         default_model: model.or_else(|| registry.default_model().map(str::to_string)),
         registry,
@@ -117,7 +193,29 @@ fn build_engine(
     if let Some(address) = models.default_model.as_deref() {
         models.resolve(Some(address))?;
     }
-    Ok(Engine::new(Box::new(models), store, budget))
+    let mut directory = path.clone().into_os_string();
+    directory.push(".workflow-runs");
+    let directory = PathBuf::from(directory);
+    owner_only_dir(&directory).with_context(|| {
+        format!(
+            "the workflow checkpoint directory {} could not be prepared",
+            directory.display()
+        )
+    })?;
+    let checkpoints =
+        jensen_harness_workflow::FileRunStore::new(&directory).with_context(|| {
+            format!(
+                "the workflow checkpoint directory {} could not be opened",
+                directory.display()
+            )
+        })?;
+    let mut workspaces = path.clone().into_os_string();
+    workspaces.push(".workspaces");
+    Ok(Engine::new(Box::new(models), store, budget)
+        .with_checkpoints(Arc::new(checkpoints))
+        .with_library(library)
+        .with_project_skills(project_skills)
+        .with_workspaces(PathBuf::from(workspaces)))
 }
 
 #[tokio::main]
@@ -126,6 +224,9 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    if let Command::Workflow { action } = &cli.command {
+        return workflow_command(action);
+    }
     let registry = load_registry(cli.config)?;
     if let Command::Auth {
         action: AuthAction::Set { provider },
@@ -135,7 +236,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let engine = Arc::new(build_engine(registry, cli.model, cli.state)?);
     match cli.command {
-        Command::Auth { .. } => {}
+        Command::Auth { .. } | Command::Workflow { .. } => {}
         Command::Run => {
             let reader = BufReader::new(stdin());
             rpc::serve_connection(reader, stdout(), engine).await?;

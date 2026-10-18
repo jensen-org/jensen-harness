@@ -1,0 +1,51 @@
+use std::path::PathBuf;
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum PromoteError {
+    #[error("{path} is not a usable git repository: {reason}")]
+    NotARepository { path: PathBuf, reason: String },
+    #[error("git failed: {0}")]
+    Git(String),
+    #[error("`{0}` is not a safe name for a run or node")]
+    InvalidName(String),
+    #[error("the worktree of node `{node}` was tampered with: {reason}")]
+    TamperedWorktree { node: String, reason: String },
+    #[error("symlink `{path}` in node `{node}` points outside its worktree")]
+    EscapingSymlink { node: String, path: String },
+    #[error("promoting `{node}` conflicts with the integration branch in: {files}")]
+    PromotionConflict { node: String, files: String },
+    #[error(
+        "the review of `{node}` was made against {reviewed}, but the integration branch is now at {current}"
+    )]
+    StaleReview {
+        node: String,
+        reviewed: String,
+        current: String,
+    },
+    #[error("the review belongs to run {reviewed}, not run {run}")]
+    WrongRun { reviewed: String, run: String },
+    #[error("the merged result of `{node}` is blocked: {reasons}")]
+    MergedResultBlocked { node: String, reasons: String },
+    #[error("the remote `{0}` is not a GitHub or GitLab repository this configuration knows")]
+    UnknownForge(String),
+    #[error("the forge refused: {0}")]
+    Forge(String),
+    #[error("pushing failed: {0}")]
+    Push(String),
+    #[error("the repository has no branch checked out to open the request against")]
+    NoBaseBranch,
+    #[error("path {0:?} in a worktree is not valid UTF-8")]
+    NonUtf8Path(PathBuf),
+    #[error("{0}")]
+    Io(String),
+}
+
+pub(crate) fn git(error: impl std::fmt::Display) -> PromoteError {
+    PromoteError::Git(error.to_string())
+}
+
+pub(crate) fn io(path: &std::path::Path, error: impl std::fmt::Display) -> PromoteError {
+    PromoteError::Io(format!("{}: {error}", path.display()))
+}

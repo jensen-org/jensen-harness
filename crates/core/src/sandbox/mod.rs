@@ -90,6 +90,17 @@ impl SandboxPolicy {
     }
 }
 
+impl SandboxPolicy {
+    #[must_use]
+    pub fn read_only(worktree: impl Into<PathBuf>) -> Self {
+        let mut policy = Self::confined_to(worktree);
+        policy
+            .extra_rules
+            .insert(0, FsRule::new(policy.worktree.clone(), FsMode::ReadOnly));
+        policy
+    }
+}
+
 /// What a backend actually managed to enforce, so a caller never has to
 /// assume a request was fully honored. A backend that cannot satisfy part
 /// of a policy reports it here rather than silently under-enforcing.

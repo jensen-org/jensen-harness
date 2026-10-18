@@ -26,6 +26,7 @@ pub enum LedgerError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeKind {
     Run,
+    Node,
     Session,
 }
 
@@ -33,6 +34,7 @@ impl ScopeKind {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Run => "run",
+            Self::Node => "node",
             Self::Session => "session",
         }
     }
@@ -141,6 +143,7 @@ fn scope_row(conn: &Connection, id: &str) -> Result<ScopeRow, StoreError> {
     };
     let kind = match kind.as_str() {
         "run" => ScopeKind::Run,
+        "node" => ScopeKind::Node,
         "session" => ScopeKind::Session,
         other => return Err(StoreError::Corrupt(format!("scope kind {other:?}"))),
     };
@@ -468,6 +471,24 @@ impl Store {
         let scope_id = scope_id.to_string();
         self.with(move |conn| usage_of(conn, &scope_id, now_ms()?))
             .await
+    }
+
+    pub async fn open_reservations_under(&self, scope_id: &str) -> Result<Vec<String>, StoreError> {
+        let scope_id = scope_id.to_string();
+        self.with(move |conn| {
+            let sql = format!(
+                "{SUBTREE}
+                 SELECT call_id FROM ledger
+                 WHERE scope_id IN (SELECT id FROM subtree) AND kind = 'reserve'
+                   AND NOT EXISTS (SELECT 1 FROM ledger ended WHERE ended.call_id = ledger.call_id
+                                   AND ended.kind IN ('settle', 'release'))
+                 ORDER BY seq"
+            );
+            let mut statement = conn.prepare(&sql)?;
+            let rows = statement.query_map(params![scope_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| row.map_err(StoreError::from)).collect()
+        })
+        .await
     }
 
     /// Reservations that are still open: the calls a crash left in flight.

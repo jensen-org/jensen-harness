@@ -16,6 +16,9 @@ path = "src/main.rs"
 [dependencies]
 jensen-harness-core = { path = "../core" }
 jensen-harness-protocol = { path = "../protocol" }
+jensen-harness-extensions = { path = "../extensions" }
+jensen-harness-promote = { path = "../promote" }
+jensen-harness-workflow = { path = "../workflow" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
@@ -25,6 +28,7 @@ tracing-subscriber = "0.3"
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 serde = "1"
+url = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

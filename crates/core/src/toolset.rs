@@ -7,7 +7,7 @@
 //! harness itself (the sandbox is unavailable, the raw store cannot be
 //! written) is a typed error that ends the run.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -107,12 +107,88 @@ struct ExpandInput {
 
 const EXPAND_DEFAULT_LIMIT: usize = 200;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Replay {
+    Repeat,
+    Never,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderReply {
+    pub text: String,
+    pub is_error: bool,
+}
+
+#[async_trait::async_trait]
+pub trait ToolProvider: Send + Sync {
+    fn specs(&self) -> Vec<ToolSpec>;
+
+    fn replay(&self, name: &str) -> Replay;
+
+    fn system_note(&self) -> Option<String> {
+        None
+    }
+
+    async fn invoke(&self, name: &str, input: &Value) -> Result<ProviderReply, ToolSetError>;
+}
+
+#[derive(Clone)]
+pub struct Confiner {
+    sandbox: std::sync::Arc<dyn Sandbox>,
+    policy: SandboxPolicy,
+    read_only: bool,
+}
+
+impl Confiner {
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.policy.worktree
+    }
+
+    pub fn confine(
+        &self,
+        program: &str,
+        args: &[String],
+        network: sandbox::NetworkPolicy,
+        writable: bool,
+    ) -> Result<(sandbox::Confined, PathBuf), ToolSetError> {
+        let writable = writable && !self.read_only;
+        let mut policy = self.policy.clone();
+        policy.network = network;
+        let worktree = policy.worktree.clone();
+        policy
+            .extra_rules
+            .retain(|rule| !(rule.path == worktree && rule.mode == sandbox::FsMode::ReadOnly));
+        if !writable {
+            policy
+                .extra_rules
+                .insert(0, sandbox::FsRule::new(worktree, sandbox::FsMode::ReadOnly));
+        }
+        std::fs::create_dir_all(&policy.scratch)
+            .map_err(|error| ToolSetError::Infrastructure(error.to_string()))?;
+        let scratch = policy.scratch.clone();
+        let confined = self
+            .sandbox
+            .confine(&policy, program, args)
+            .map_err(|error| ToolSetError::Sandbox(error.to_string()))?;
+        Ok((confined, scratch))
+    }
+}
+
 pub struct ToolSet {
+    providers: Vec<std::sync::Arc<dyn ToolProvider>>,
     worktree: Worktree,
-    sandbox: Box<dyn Sandbox>,
+    sandbox: std::sync::Arc<dyn Sandbox>,
     policy: SandboxPolicy,
     store: RawStore,
     shell_timeout: Duration,
+    read_only: bool,
 }
 
 impl std::fmt::Debug for ToolSet {
@@ -153,6 +229,22 @@ impl ToolSet {
         ))
     }
 
+    pub fn for_worktree_access(root: &Path, access: Access) -> Result<Self, ToolError> {
+        let worktree = Worktree::open(root)?;
+        let policy = match access {
+            Access::ReadOnly => SandboxPolicy::read_only(worktree.root()),
+            Access::ReadWrite => SandboxPolicy::confined_to(worktree.root()),
+        };
+        let store = RawStore::new(
+            std::env::temp_dir().join(format!("jensen-harness-raw-{}", uuid::Uuid::new_v4())),
+        );
+        let tools = Self::new(worktree, sandbox::platform_default(), policy, store);
+        Ok(match access {
+            Access::ReadOnly => tools.read_only(),
+            Access::ReadWrite => tools,
+        })
+    }
+
     #[must_use]
     pub fn new(
         worktree: Worktree,
@@ -161,12 +253,111 @@ impl ToolSet {
         store: RawStore,
     ) -> Self {
         Self {
+            providers: Vec::new(),
             worktree,
-            sandbox,
+            sandbox: std::sync::Arc::from(sandbox),
             policy,
             store,
             shell_timeout: shell::DEFAULT_TIMEOUT,
+            read_only: false,
         }
+    }
+
+    #[must_use]
+    pub fn confiner(&self) -> Confiner {
+        Confiner {
+            sandbox: std::sync::Arc::clone(&self.sandbox),
+            policy: self.policy.clone(),
+            read_only: self.read_only,
+        }
+    }
+
+    pub fn confine_process(
+        &self,
+        program: &str,
+        args: &[String],
+        network: sandbox::NetworkPolicy,
+        writable: bool,
+    ) -> Result<(sandbox::Confined, PathBuf), ToolSetError> {
+        self.confiner().confine(program, args, network, writable)
+    }
+
+    pub fn attach(
+        &mut self,
+        provider: std::sync::Arc<dyn ToolProvider>,
+    ) -> Result<(), ToolSetError> {
+        let taken: Vec<String> = self.specs().into_iter().map(|spec| spec.name).collect();
+        for spec in provider.specs() {
+            if taken.contains(&spec.name) {
+                return Err(ToolSetError::Infrastructure(format!(
+                    "tool name `{}` is already taken",
+                    spec.name
+                )));
+            }
+        }
+        self.providers.push(provider);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn with_provider(mut self, provider: std::sync::Arc<dyn ToolProvider>) -> Self {
+        self.providers.push(provider);
+        self
+    }
+
+    #[must_use]
+    pub fn specs(&self) -> Vec<ToolSpec> {
+        let mut extra: Vec<ToolSpec> = self
+            .providers
+            .iter()
+            .flat_map(|provider| provider.specs())
+            .collect();
+        extra.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut specs = Self::builtin_specs();
+        specs.extend(extra);
+        specs
+    }
+
+    #[must_use]
+    pub fn system_note(&self) -> String {
+        let mut notes: Vec<String> = self
+            .providers
+            .iter()
+            .filter_map(|provider| provider.system_note())
+            .collect();
+        notes.sort();
+        notes.iter().map(|note| format!("\n\n{note}")).collect()
+    }
+
+    #[must_use]
+    pub fn replay(&self, name: &str) -> Replay {
+        if matches!(name, "read" | "glob" | "grep" | "expand") {
+            return Replay::Repeat;
+        }
+        self.provider_of(name)
+            .map_or(Replay::Never, |provider| provider.replay(name))
+    }
+
+    fn provider_of(&self, name: &str) -> Option<&std::sync::Arc<dyn ToolProvider>> {
+        self.providers
+            .iter()
+            .find(|provider| provider.specs().iter().any(|spec| spec.name == name))
+    }
+
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    pub async fn run_command(
+        &self,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<shell::ShellResult, ToolSetError> {
+        shell::run_with_timeout(self.sandbox.as_ref(), &self.policy, command, timeout)
+            .await
+            .map_err(|error| ToolSetError::Sandbox(error.to_string()))
     }
 
     #[must_use]
@@ -183,7 +374,7 @@ impl ToolSet {
     /// The same list in the same order on every call, so the tool block
     /// stays byte identical and caches.
     #[must_use]
-    pub fn specs() -> Vec<ToolSpec> {
+    pub fn builtin_specs() -> Vec<ToolSpec> {
         let spec = |name: &str, description: &str, schema: Value| ToolSpec {
             name: name.to_string(),
             description: description.to_string(),
@@ -248,6 +439,9 @@ impl ToolSet {
     /// [`ToolSetError`] for a failure of the harness itself. Everything the
     /// model got wrong is an `Ok` reply with `is_error` set.
     pub async fn invoke(&self, name: &str, input: &Value) -> Result<ToolReply, ToolSetError> {
+        if self.read_only && matches!(name, "edit" | "shell") {
+            return Ok(ToolReply::model_error(name, "this agent is read only"));
+        }
         match name {
             "read" => self.read(input),
             "edit" => self.edit(input),
@@ -255,8 +449,25 @@ impl ToolSet {
             "grep" => self.grep(input),
             "shell" => self.shell(input).await,
             "expand" => self.expand(input),
-            other => Ok(ToolReply::model_error(other, "unknown tool")),
+            other => match self.provider_of(other) {
+                Some(provider) => self.external(provider, other, input).await,
+                None => Ok(ToolReply::model_error(other, "unknown tool")),
+            },
         }
+    }
+
+    async fn external(
+        &self,
+        provider: &std::sync::Arc<dyn ToolProvider>,
+        name: &str,
+        input: &Value,
+    ) -> Result<ToolReply, ToolSetError> {
+        let reply = provider.invoke(name, input).await?;
+        let compacted = render::external(name, &reply.text, &self.store).map_err(infrastructure)?;
+        Ok(ToolReply {
+            is_error: reply.is_error,
+            ..ToolReply::ok(compacted)
+        })
     }
 
     fn read(&self, input: &Value) -> Result<ToolReply, ToolSetError> {
