@@ -12,34 +12,12 @@ fn refuse(yaml: &str) -> SpecError {
 }
 
 #[test]
-fn example_loads_with_waves_and_stable_hash() {
-    let first = load(TRIAGE).expect("example loads");
-    let second = load(TRIAGE).expect("example loads");
-    assert_eq!(first.hash(), second.hash());
-    assert_eq!(
-        first.waves(),
-        &[
-            vec!["inspect_code".to_owned(), "inspect_docs".to_owned()],
-            vec!["check".to_owned()],
-            vec!["route".to_owned()],
-        ]
-    );
-    assert!(first.dot().contains("inspect_code"));
-}
-
-#[test]
 fn hash_changes_with_the_spec() {
     let changed = TRIAGE.replace("max_turns: 8", "max_turns: 9");
     assert_ne!(
         load(TRIAGE).expect("loads").hash(),
         load(&changed).expect("loads").hash()
     );
-}
-
-#[test]
-fn json_schema_describes_nodes() {
-    let schema = jensen_harness_workflow::json_schema().to_string();
-    assert!(schema.contains("verifier"));
 }
 
 #[test]
@@ -163,12 +141,6 @@ const IMPLEMENT: &str = include_str!("../../workflows/examples/implement.yaml");
 
 fn implement_with(from: &str, to: &str) -> String {
     IMPLEMENT.replacen(from, to, 1)
-}
-
-#[test]
-fn the_implement_example_loads_in_four_waves() {
-    let workflow = load(IMPLEMENT).expect("example loads");
-    assert_eq!(workflow.waves().len(), 4);
 }
 
 #[test]

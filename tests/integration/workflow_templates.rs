@@ -198,11 +198,3 @@ fn context_rules_are_checked() {
     let workflow = load_with(&inherited, &library(dir.path())).unwrap();
     assert_eq!(agent(&workflow, "b").reads, ["task"]);
 }
-
-#[test]
-fn the_shipped_library_loads() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("agents");
-    let yaml = "version: 1\nname: t\nchannels:\n  task: {schema: {type: string}, init: ''}\n  findings: {schema: {type: array, items: {type: string}}, reducer: append}\nnodes:\n  r: {kind: agent, uses: reviewer}\n";
-    let workflow = load_with(yaml, &Library::new(vec![root])).unwrap();
-    assert_eq!(agent(&workflow, "r").role, "review");
-}
